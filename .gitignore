@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Electron binary download cache, redirected here because the platform default
+# under ~/Library/Caches is not writable in every environment.
+.electron-cache/
+
+# Chromium userData (caches, cookies, local storage) for local runs.
+.electron-userdata/
+
+# Throwaway DSH_HOME used by the probes and the admission test, so a test run
+# never touches the real ~/.dsh profile.
+.dsh-probe/
+
+# Sparse checkout of anywhere-labs/dsh-desktop, kept only as a reading
+# reference. Re-clone it rather than vendoring it here.
+.ref-upstream/
+
+# macOS
+.DS_Store
