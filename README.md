@@ -128,6 +128,74 @@ driving 的是同一份 profile、憑證與已裝插件。
 | `DSH_DESKTOP_PORT` | loopback port，預設 `0`（OS 指派） |
 | `DSH_DESKTOP_VERBOSE` | `1` 開啟診斷輸出 |
 | `DSH_DESKTOP_USER_DATA` | 覆寫 Chromium userData 目錄 |
+| `DSH_DESKTOP_APP_NAME` | 覆寫應用程式名稱，預設取 `package.json` 的 `productName` |
+| `DSH_DESKTOP_ICON` | 覆寫圖標，`.png`（建議 1024×1024）或 `.icns` |
+| `DSH_DESKTOP_BUNDLE_ID` | 覆寫 bundle identifier，預設 `dev.dsh-desktop` |
+
+### 應用程式名稱與圖標
+
+macOS 的選單列名稱、Cmd-Tab 標籤與 Finder 名稱來自 bundle 的 `Info.plist`，
+執行中的行程改不了——`app.setName` 只影響 Electron 自己的選單與 About 面板。
+所以直接 `electron .` 永遠顯示「Electron」。
+
+`pnpm start` 因此先由 [branded-bundle.js](src/main/branded-bundle.js)
+把 `Electron.app` 複製成 `.electron-app/<名稱>.app`（APFS clone，幾乎不佔空間），
+改寫 `CFBundleName`、`CFBundleDisplayName`、`CFBundleIdentifier` 並放入圖標，
+再從它啟動。輸入（Electron 版本、名稱、bundle id、圖標內容）沒變時會重用。
+
+執行時另外設定 Dock 圖標與 About 面板，因此 `pnpm start:plain`（原本的
+`electron .`）至少 Dock 圖標是對的。
+
+每個欄位依序取值，前者優先：
+
+1. 環境變數（`DSH_DESKTOP_APP_NAME`、`DSH_DESKTOP_ICON`）——單次啟動覆寫，不寫檔
+2. **設定 → 應用外觀**頁面存下的選擇（`<userData>/branding.json`）
+3. 預設值：`package.json` 的 `productName`（`DeepSeek Harness`）；
+   [assets/icon.png](assets/icon.png) 與 [assets/icon.icns](assets/icon.icns)，
+   沿用上游 MIT 授權圖標，見 [assets/NOTICE.md](assets/NOTICE.md)
+
+改名**不會**搬動資料：userData 固定在 `~/Library/Application Support/dsh-desktop`，
+不隨名稱改變。
+
+### 設定頁：應用外觀
+
+DSH 設定面板裡多一個「應用外觀」區塊，可以改名稱、選圖標、還原預設。
+
+| 變更 | 立即生效 | 重新啟動後生效 |
+|---|---|---|
+| 圖標 | Dock、About 面板 | Finder、Cmd-Tab |
+| 名稱 | About 面板、視窗標題 | 選單列粗體名稱、Cmd-Tab |
+
+有需要重新啟動的差異時，頁面會出現「立即重新啟動」。重新啟動不是
+`app.relaunch()`——那會重跑**舊的** bundle，而且 bundle 在 app 執行中不能重建
+（Chromium 會從裡面啟動 helper）。改由 [relaunch.js](src/main/relaunch.js) 留下一個
+detached helper：等舊行程結束 → 重建 bundle → 從新 bundle 啟動。
+helper 的輸出寫在 `<userData>/relaunch.log`。
+
+架構依照上游 `dsh-plugin-desktop` 的做法，但只保留必要的部分：
+
+- **Client**：[plugins/dsh-desktop-branding](plugins/dsh-desktop-branding/) 是一個
+  只有 client 半邊的 DSH 插件，向 `settings.section` slot 註冊頁面。bundle 是手寫的
+  lazy-CJS（與 tsdown 輸出同格式），不需要建置步驟。
+- **載入**：[plugins/cordis.patch.yml](plugins/cordis.patch.yml) 在啟動時以
+  `--patch` overlay 插入，**不修改** `~/.dsh` 的 profile；從終端跑 `dsh web`
+  看不到這個頁面。同一個 overlay 也關掉 `printUrl`，讓 launch token 不會印進終端。
+- **Host 路由**：main process 直接在 `webServer` 上註冊
+  `/api/dsh-desktop/branding*`（[branding-routes.js](src/main/branding-routes.js)），
+  因為 Dock、檔案對話框、重新啟動都需要 Electron，Cordis host 插件拿不到。
+
+路由同時要求：
+
+- 上游 Connection 的 cookie 驗證；
+- **本 generation 的能力 header**：只有桌面視窗自己的 session 會附上，
+  所以一般瀏覽器即使有 cookie 也進不來，頁面會顯示「僅在桌面應用中可用」；
+- 修改類請求還要：`Origin` 完全相符、JSON、4KB 上限、欄位完全吻合。
+
+選圖標用的是原生檔案對話框，頁面**不能**傳入路徑。選中的檔案會先檢查
+magic bytes 並試解碼，再複製進 userData（以內容雜湊命名），所以就算原檔之後被
+移走，設定也還在。
+
+主視窗仍然沒有 preload、`sandbox: true`，不暴露任何 Electron API。
 
 ---
 
@@ -141,8 +209,9 @@ pnpm check
 
 | 指令 | 內容 |
 |---|---|
-| `pnpm check` | 語法 + 單元 + 認證合約（**59 斷言**） |
-| `pnpm test:unit` | 能力 token、header 注入、視窗封閉性（38 斷言，純函數） |
+| `pnpm check` | 語法 + 單元 + 認證合約 |
+| `pnpm test:unit` | 能力 token、header 注入、視窗封閉性、harness 探索、應用程式識別、外觀路由的准入規則與設定檔（無視窗） |
+| `node scripts/test-relaunch.mjs` | 在真實視窗內改名 → 重新啟動 → 確認新 bundle 的 `Info.plist` 與新行程（使用拋棄式 userData） |
 | `pnpm test:admission` | 對真實 host 驗證完整認證鏈（14 斷言） |
 | `pnpm probe:host` | 無視窗檢查 tree 狀態、服務、injection rows |
 | `pnpm probe:http` | 區分「host 不服務」與「Electron 無法導覽」 |
@@ -190,3 +259,13 @@ pnpm smoke
 ### 尚未實作
 
 tray、選單、視窗狀態保存、自動更新、打包簽章。
+
+`.electron-app/` 只是開發用 bundle，不是可散佈的正式打包。
+
+### 應用外觀頁的限制
+
+- 依賴 DSH 內部介面：`settings.section` slot、`window.__ModuleLoader__` 的 bundle
+  格式、`runProfile` 的 `patchFiles`。和 Electron 版本鎖一樣，升級 DSH 時要重跑
+  `pnpm smoke`（它會打開設定頁確認區塊有渲染）。
+- 非正方形的 PNG 轉 `.icns` 時會被拉伸，不會裁切。
+- 字典只有 `zh`（簡體，跟隨 DSH 自身的 locale）與 `en`。
