@@ -10,12 +10,18 @@
  * Discovery follows the `dsh` binary, which is the same thing the user already
  * runs. An explicit `DSH_ANCHOR` still wins, for a checkout that is not the one
  * on `PATH`.
+ *
+ * The packaged app is the exception: it ships its own harness under
+ * `Resources/app/runtime/node_modules` (see scripts/package.mjs), pinned to the
+ * one DSH release its Electron build can load, and never looks at `PATH`.
  */
 
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+
+import { bundledHarnessAnchor, isPackagedLayout } from './packaged.js';
 
 const require = createRequire(import.meta.url);
 
@@ -38,13 +44,25 @@ const SIBLING_SPECIFIER = '@deepseek-ai/dsh-app-boot';
  * @throws when no installation can be located, with guidance rather than a bare
  *   failure.
  */
-export function findHarnessAnchor() {
+export function findHarnessAnchor(options = {}) {
+  const root = options.root;
   const attempts = [];
 
   const explicit = process.env.DSH_ANCHOR;
   if (explicit !== undefined && explicit.length > 0) {
     if (canResolveFrom(explicit)) return { anchor: explicit, source: 'DSH_ANCHOR' };
     attempts.push(`DSH_ANCHOR=${explicit} (does not resolve ${PROBE_SPECIFIER})`);
+  }
+
+  if (isPackagedLayout(root)) {
+    const bundled = bundledHarnessAnchor(root);
+    if (bundled !== undefined && canResolveFrom(bundled)) return { anchor: bundled, source: 'bundled' };
+    // A packaged app with a broken bundle is a packaging defect; falling back
+    // to whatever `dsh` happens to be on PATH would hide it behind a version
+    // mismatch with this Electron build.
+    throw new Error(
+      `dsh-desktop: the bundled DSH harness is missing or incomplete (${String(bundled)}); reinstall the app`,
+    );
   }
 
   for (const candidate of candidatesFromDshBinary(attempts)) {

@@ -1,0 +1,17 @@
+# Standalone install root for the harness shipped inside the .app.
+#
+# `hoisted` gives a plain npm-style node_modules tree with real directories, so
+# the copy inside the bundle is self-contained and survives being moved; pnpm's
+# default isolated layout would symlink into a store outside the bundle.
+nodeLinker: hoisted
+
+# No install scripts run. Every native addon DSH needs on darwin-arm64 ships
+# prebuilt (node-pty, koffi, sharp, node-addon-*), which is also how the global
+# `dsh` install is set up. The one thing a script would add — the executable
+# bit on node-pty's spawn-helper — is restored by scripts/package.mjs.
+allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': false
+  '@google/genai': false
+  koffi: false
+  node-pty: false
+  protobufjs: false

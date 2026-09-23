@@ -323,6 +323,24 @@ export function resolveBranding(options = {}) {
 }
 
 /**
+ * One comparable value for "which icon a bundle carries".
+ *
+ * The shipped default is recorded as `'default'` rather than a path, because
+ * its path differs between the machine that packaged the app and the installed
+ * bundle. A user-chosen icon is its content-addressed copy in userData (or the
+ * env override's path), which is stable.
+ *
+ * @param branding - resolved branding.
+ * @returns `'default'`, `'none'`, or the icon file's path.
+ */
+export function iconIdentity(branding) {
+  if (branding.sources?.icon === 'default') {
+    return branding.iconIcns === undefined && branding.iconPng === undefined ? 'none' : 'default';
+  }
+  return branding.iconIcns ?? branding.iconPng ?? 'none';
+}
+
+/**
  * @param path - one icon file.
  * @returns `{ iconPng, iconIcns }` with the other slot empty.
  */

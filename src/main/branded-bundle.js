@@ -27,7 +27,8 @@ import { copyFileSync, existsSync, readFileSync, rmSync, mkdirSync, writeFileSyn
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join } from 'node:path';
 
-import { PROJECT_ROOT, resolveBranding } from './branding.js';
+import { PROJECT_ROOT, iconIdentity, resolveBranding, userDataDirectory } from './branding.js';
+import { ICON_SOURCE_KEY, isPackagedLayout } from './packaged.js';
 
 const require = createRequire(import.meta.url);
 
@@ -35,7 +36,7 @@ const require = createRequire(import.meta.url);
 export const BUNDLE_DIRECTORY = join(PROJECT_ROOT, '.electron-app');
 
 /** Bumped whenever the stamping procedure below changes. */
-const STAMP_FORMAT = 1;
+const STAMP_FORMAT = 2;
 
 /**
  * Path of the stock Electron executable installed in node_modules.
@@ -96,20 +97,55 @@ export function ensureBrandedBundle(options = {}) {
     execFileSync('cp', ['-R', stockApp, app]);
   }
 
+  stampBundle(app, branding);
+
+  writeFileSync(stampFile, stamp);
+  return executable;
+}
+
+/**
+ * Write an identity into an existing `.app` bundle: display name, bundle
+ * identifier, and icon.
+ *
+ * Shared by the dev launcher, the packager, and the packaged relaunch helper,
+ * so every bundle this project produces is stamped the same way. Signing is the
+ * caller's business: the dev bundle runs unsigned-modified, the packaged one is
+ * re-signed afterwards.
+ *
+ * @param app - `.app` directory to modify in place.
+ * @param branding - resolved branding.
+ * @param options - `{ version }`: optional marketing version to record.
+ */
+export function stampBundle(app, branding, options = {}) {
   const plist = join(app, 'Contents', 'Info.plist');
   setPlist(plist, 'CFBundleName', branding.name);
   setPlist(plist, 'CFBundleDisplayName', branding.name);
   setPlist(plist, 'CFBundleIdentifier', branding.bundleId);
+  if (options.version !== undefined) {
+    setPlist(plist, 'CFBundleShortVersionString', options.version);
+    setPlist(plist, 'CFBundleVersion', options.version);
+  }
 
+  const icon = iconForBundle(branding);
   if (icon !== undefined) {
     // Leave electron.icns in place: nothing else references it, and deleting
     // a sealed resource is needless churn.
     copyFileSync(icon, join(app, 'Contents', 'Resources', 'app.icns'));
     setPlist(plist, 'CFBundleIconFile', 'app.icns');
   }
+  // Record which icon this bundle carries, so a packaged app can tell whether
+  // the saved choice still needs a relaunch (branding-controller.js).
+  setPlist(plist, ICON_SOURCE_KEY, iconIdentity(branding));
 
-  // Ask LaunchServices to re-read the bundle so Finder and the Dock pick up
-  // the new name and icon instead of a cached entry. Best effort only.
+  registerWithLaunchServices(app);
+}
+
+/**
+ * Ask LaunchServices to re-read a bundle so Finder and the Dock pick up a new
+ * name and icon instead of a cached entry. Best effort only.
+ * @param app - `.app` directory.
+ */
+export function registerWithLaunchServices(app) {
   try {
     execFileSync(
       '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister',
@@ -119,9 +155,6 @@ export function ensureBrandedBundle(options = {}) {
   } catch {
     // Registration is cosmetic; the bundle still launches without it.
   }
-
-  writeFileSync(stampFile, stamp);
-  return executable;
 }
 
 /**
@@ -144,7 +177,10 @@ function iconForBundle(branding) {
  */
 function pngToIcns(png) {
   const digest = createHash('sha256').update(readFileSync(png)).digest('hex').slice(0, 16);
-  const cache = join(PROJECT_ROOT, '.electron-cache', 'icons');
+  // Never inside a packaged bundle: writing there would break its seal.
+  const cache = isPackagedLayout()
+    ? join(userDataDirectory(), 'icon-cache')
+    : join(PROJECT_ROOT, '.electron-cache', 'icons');
   const output = join(cache, `${digest}.icns`);
   if (existsSync(output)) return output;
 

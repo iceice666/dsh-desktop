@@ -12,12 +12,20 @@ import { app, Menu } from 'electron';
 
 import { BrandingController } from './branding-controller.js';
 import { createBrandingRoutes } from './branding-routes.js';
-import { resolveBranding, userDataDirectory } from './branding.js';
+import { iconIdentity, resolveBranding, userDataDirectory } from './branding.js';
 import { findHarnessAnchor } from './find-harness.js';
 import { startHost, resolveOrigin, resolveAuthenticationUrl } from './host.js';
 import { installNodeShim } from './node-shim.js';
+import {
+  ICON_SOURCE_KEY,
+  isPackagedLayout,
+  packagedAppBundle,
+  packagedDshHome,
+  readBundleKey,
+} from './packaged.js';
 import { scheduleRelaunch } from './relaunch.js';
 import { ShellGeneration } from './shell-generation.js';
+import { adoptLoginShellEnvironment } from './shell-environment.js';
 import { buildMenuTemplate, commandScript } from './shortcuts.js';
 
 const verbose = process.env.DSH_DESKTOP_VERBOSE === '1';
@@ -38,15 +46,40 @@ function log(message) {
 app.setPath('userData', userDataDirectory());
 
 /**
- * Identity this process launched with — what the bundle's Info.plist shows
- * for as long as it runs. Later Settings changes are compared against it.
+ * Whether this process runs from a packaged `.app` (scripts/package.mjs)
+ * rather than from the checkout. Decided by layout, so the relaunch helper and
+ * this process agree.
  */
-const launched = resolveBranding();
+const packaged = isPackagedLayout();
 
-// Electron's own menus, the About panel, and notifications read this. The
-// menu-bar title and Cmd-Tab label come from the bundle's Info.plist instead,
-// which `scripts/start.mjs` stamps with the same name.
-app.setName(launched.name);
+if (packaged) {
+  // The packaged app ships its own harness; sharing the CLI's `~/.dsh` would
+  // make the two installations keep rewriting each other's module links under
+  // `profiles/node_modules`. See `packagedDshHome`.
+  process.env.DSH_HOME = packagedDshHome();
+}
+
+/** Identity in effect now; the About panel and window title follow it. */
+const effective = resolveBranding();
+
+/**
+ * What the running bundle's Info.plist shows — the menu-bar name and Cmd-Tab
+ * label — for as long as this process lives. Settings changes are compared
+ * against it to decide whether a relaunch would change anything.
+ *
+ * The dev launcher stamps the bundle from the resolver right before starting,
+ * so the two agree. A packaged bundle was stamped at packaging time or by the
+ * last relaunch, and is read back from its plist.
+ */
+const launched = packaged
+  ? {
+      name: readBundleKey(packagedAppBundle(), 'CFBundleName') ?? effective.name,
+      icon: readBundleKey(packagedAppBundle(), ICON_SOURCE_KEY) ?? 'default',
+    }
+  : { name: effective.name, icon: iconIdentity(effective) };
+
+// Electron's own menus, the About panel, and notifications read this.
+app.setName(effective.name);
 
 /** Live host tree for the current generation. */
 let host;
@@ -69,6 +102,7 @@ const branding = new BrandingController({
       executable: process.execPath,
       args: process.argv.slice(1).filter((arg) => arg.startsWith('--')),
       env: process.env,
+      packaged,
     });
     app.quit();
   },
@@ -105,7 +139,7 @@ function installMenu() {
   const template = buildMenuTemplate({
     platform: process.platform,
     locale: app.getLocale(),
-    appName: launched.name,
+    appName: effective.name,
     dispatch: (id) => {
       generation?.dispatchCommand(commandScript(id));
     },
@@ -121,6 +155,15 @@ async function main() {
   // plain `electron .` launch, which runs the stock Electron.app, is branded.
   branding.applyInitial();
   installMenu();
+
+  if (packaged) {
+    // Opened from Finder, the process has launchd's bare PATH and `/` as its
+    // working directory. Agent tools need the user's PATH, and DSH records
+    // `process.cwd()` as the profile's working directory.
+    log(await adoptLoginShellEnvironment({ home: app.getPath('home') }));
+    process.chdir(app.getPath('home'));
+    log(`DSH_HOME=${String(process.env.DSH_HOME)}`);
+  }
 
   const { anchor, source } = findHarnessAnchor();
   log(`using DSH from ${source}`);
@@ -152,7 +195,7 @@ async function main() {
   await generation.mount({
     origin,
     authenticationUrl,
-    title: launched.name,
+    title: effective.name,
     verifyClient: smoke,
   });
 

@@ -17,6 +17,7 @@ import { app, dialog, nativeImage, BrowserWindow } from 'electron';
 
 import {
   BrandingPreferences,
+  iconIdentity,
   ICON_EXTENSIONS,
   MAX_NAME_LENGTH,
   resolveBranding,
@@ -33,9 +34,9 @@ export class BrandingController {
   #log;
 
   /**
-   * @param options - `{ launched, relaunch, log }`: the identity the process
-   *   started with (what the bundle currently shows), a function performing
-   *   the relaunch, and a diagnostics sink.
+   * @param options - `{ launched, relaunch, log }`: what the running bundle
+   *   shows, as `{ name, icon }` with `icon` an {@link iconIdentity} value; a
+   *   function performing the relaunch; and a diagnostics sink.
    */
   constructor(options) {
     this.#preferences = new BrandingPreferences(userDataDirectory());
@@ -177,10 +178,6 @@ export class BrandingController {
   #restartRequired(current) {
     if (process.platform !== 'darwin') return false;
     const launched = this.#launched;
-    return (
-      launched.name !== current.name ||
-      launched.iconPng !== current.iconPng ||
-      launched.iconIcns !== current.iconIcns
-    );
+    return launched.name !== current.name || launched.icon !== iconIdentity(current);
   }
 }

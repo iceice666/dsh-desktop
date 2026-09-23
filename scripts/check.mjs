@@ -76,6 +76,10 @@ if (!step('unit: keyboard shortcuts and menu', ['scripts/test-shortcuts.mjs'])) 
   failures.push('unit:shortcuts');
 }
 
+if (!step('unit: packaged layout, node shim, shell environment', ['scripts/test-packaging.mjs'])) {
+  failures.push('unit:packaging');
+}
+
 if (!step('admission: live host contract', ['scripts/test-admission.mjs'])) {
   failures.push('admission');
 }
