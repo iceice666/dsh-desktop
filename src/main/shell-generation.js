@@ -64,7 +64,15 @@ export class ShellGeneration {
       minHeight: 600,
       title: spec.title,
       titleBarStyle: 'hiddenInset',
-      backgroundColor: '#202124',
+      // Native translucent sidebar material, like Codex and Finder. The
+      // upstream client is already built for it: under
+      // `<html data-platform="darwin">` it makes `html`, `body`, and the layout
+      // frame transparent and paints the sidebar column at 60% opacity, while
+      // the center column keeps its solid base colour. The window background
+      // must be fully transparent or it would cover the material.
+      ...(process.platform === 'darwin'
+        ? { vibrancy: 'sidebar', visualEffectState: 'followWindow', backgroundColor: '#00000000' }
+        : { backgroundColor: '#202124' }),
       show: false,
       webPreferences: {
         contextIsolation: true,
