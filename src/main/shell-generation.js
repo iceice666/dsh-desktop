@@ -332,6 +332,55 @@ export class ShellGeneration {
   }
 
   /**
+   * Smoke check for keyboard shortcuts: fire the real menu items and confirm
+   * the page reacted — ⌘, opens the Settings modal, ⌘/ opens the shortcuts
+   * page, ⌘B toggles the sidebar.
+   *
+   * @param press - `(commandId) => void`, clicks the application menu item.
+   * @throws when a command has no visible effect.
+   */
+  async verifyShortcuts(press) {
+    const window = this.#window;
+    if (window === undefined || window.isDestroyed()) throw new Error('dsh-desktop: no window');
+    const probe = (expression) => window.webContents.executeJavaScript(expression, true);
+    const until = async (label, expression) => {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        if ((await probe(expression)) === true) return;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      throw new Error(`dsh-desktop: shortcut check "${label}" failed`);
+    };
+    const modal = `document.querySelector('[role="dialog"][aria-modal="true"]')`;
+    const escape = `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`;
+    const collapsed = `document.querySelector('[data-sidebar-collapsed="true"]') !== null`;
+
+    press('settings');
+    await until('settings opens', `${modal} !== null`);
+    await probe(escape);
+    await until('settings closes', `${modal} === null`);
+
+    press('shortcuts');
+    await until('shortcuts page renders', `document.querySelector('.dshDesktopShortcuts kbd') !== null`);
+    const screenshot = process.env.DSH_DESKTOP_SMOKE_SHORTCUTS_SCREENSHOT;
+    if (screenshot !== undefined) {
+      const { writeFileSync } = await import('node:fs');
+      writeFileSync(screenshot, (await window.webContents.capturePage()).toPNG());
+      this.#log(`shortcuts screenshot written to ${screenshot}`);
+    }
+    await probe(escape);
+    await until('shortcuts page closes', `${modal} === null`);
+
+    const before = await probe(collapsed);
+    press('toggleSidebar');
+    await until('sidebar toggles', `(${collapsed}) === ${String(!before)}`);
+    press('toggleSidebar');
+    await until('sidebar toggles back', `(${collapsed}) === ${String(before)}`);
+
+    this.#log('shortcuts: settings, shortcuts page, and sidebar toggle respond');
+  }
+
+  /**
    * Test hook: rename and restart through the page's own requests, the same
    * calls the Settings section makes.
    * @param name - new display name.
@@ -367,6 +416,27 @@ export class ShellGeneration {
   /** Whether the window is still usable. */
   get alive() {
     return this.#window !== undefined && !this.#window.isDestroyed();
+  }
+
+  /**
+   * Deliver one keyboard-shortcut command to the page.
+   *
+   * A one-way push: the main process dispatches a DOM event that the
+   * `dsh-desktop-shortcuts` client plugin handles. Nothing flows back and the
+   * page gets no handle to call the main process with.
+   *
+   * @param script - the dispatch script from `commandScript` (already
+   *   validated against the command table).
+   */
+  dispatchCommand(script) {
+    const window = this.#window;
+    if (window === undefined || window.isDestroyed()) return;
+    // A command aimed at the app while it is hidden or minimised should also
+    // bring it forward (⌘, from the menu bar, for instance).
+    if (!window.isVisible() || window.isMinimized()) this.show();
+    window.webContents.executeJavaScript(script, true).catch((cause) => {
+      this.#log(`shortcut dispatch failed: ${String(cause)}`);
+    });
   }
 
   /**

@@ -9,6 +9,10 @@
       # read `main` for a file URL. client-modules walks up from it to find
       # the package.json that declares `dsh.client`.
       name: ./dsh-desktop-branding/lib/index.js
+    # Keyboard shortcuts: page-side command runner + Settings page. The
+    # accelerators themselves are on the native menu (src/main/shortcuts.js).
+    - id: dsh-desktop-shortcuts
+      name: ./dsh-desktop-shortcuts/lib/index.js
 
 # The window is the surface: nobody reads the terminal line, and it carries the
 # launch token, which should not land in terminal scrollback or a log file.

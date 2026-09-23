@@ -35,6 +35,7 @@ const sourceDirectories = [
   join('src', 'main'),
   join('src', 'preload'),
   join('plugins', 'dsh-desktop-branding', 'lib'),
+  join('plugins', 'dsh-desktop-shortcuts', 'lib'),
 ];
 const sources = sourceDirectories.flatMap((directory) =>
   readdirSync(join(root, directory))
@@ -69,6 +70,10 @@ if (!step('unit: application identity', ['scripts/test-branding.mjs'])) {
 
 if (!step('unit: branding routes and saved preferences', ['scripts/test-branding-routes.mjs'])) {
   failures.push('unit:branding-routes');
+}
+
+if (!step('unit: keyboard shortcuts and menu', ['scripts/test-shortcuts.mjs'])) {
+  failures.push('unit:shortcuts');
 }
 
 if (!step('admission: live host contract', ['scripts/test-admission.mjs'])) {

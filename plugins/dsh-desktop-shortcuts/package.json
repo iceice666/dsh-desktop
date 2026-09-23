@@ -1,0 +1,24 @@
+{
+  "name": "dsh-desktop-shortcuts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Keyboard shortcut commands and the Settings page that lists them. Browser-only; the accelerators live on the desktop app's native menu.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  }
+}

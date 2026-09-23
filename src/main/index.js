@@ -8,7 +8,7 @@
  * registers on the host's `webServer`, gated to this window's own traffic.
  */
 
-import { app } from 'electron';
+import { app, Menu } from 'electron';
 
 import { BrandingController } from './branding-controller.js';
 import { createBrandingRoutes } from './branding-routes.js';
@@ -17,6 +17,7 @@ import { findHarnessAnchor } from './find-harness.js';
 import { startHost, resolveOrigin, resolveAuthenticationUrl } from './host.js';
 import { scheduleRelaunch } from './relaunch.js';
 import { ShellGeneration } from './shell-generation.js';
+import { buildMenuTemplate, commandScript } from './shortcuts.js';
 
 const verbose = process.env.DSH_DESKTOP_VERBOSE === '1';
 
@@ -94,12 +95,31 @@ function registerBrandingRoutes(origin) {
 }
 
 /**
+ * Install the application menu, which carries the keyboard shortcuts.
+ *
+ * Page commands are resolved against the live generation at click time, so a
+ * menu built once never holds on to a released window.
+ */
+function installMenu() {
+  const template = buildMenuTemplate({
+    platform: process.platform,
+    locale: app.getLocale(),
+    appName: launched.name,
+    dispatch: (id) => {
+      generation?.dispatchCommand(commandScript(id));
+    },
+  });
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/**
  * Boot the host tree and mount the first shell generation.
  */
 async function main() {
   // Dock icon and About panel. Set at runtime as well as in the bundle so a
   // plain `electron .` launch, which runs the stock Electron.app, is branded.
   branding.applyInitial();
+  installMenu();
 
   const { anchor, source } = findHarnessAnchor();
   log(`using DSH from ${source}`);
@@ -137,6 +157,13 @@ async function main() {
   }
 
   if (smoke) {
+    // Through the installed menu items, so the accelerator wiring is covered
+    // and not just the page-side listener.
+    await generation.verifyShortcuts((id) => {
+      const item = Menu.getApplicationMenu()?.getMenuItemById(`dsh-desktop.${id}`);
+      if (item === null || item === undefined) throw new Error(`dsh-desktop: no menu item for ${id}`);
+      item.click();
+    });
     await generation.verifyBrandingPage();
     process.stdout.write('dsh-desktop: SMOKE OK\n');
     await teardown();

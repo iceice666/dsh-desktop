@@ -216,6 +216,38 @@ magic bytes 並試解碼，再複製進 userData（以內容雜湊命名），�
 主視窗仍然 `sandbox: true`，不暴露任何 Electron API（唯一的 preload 只設
 `data-platform` 屬性）。
 
+### 鍵盤快捷鍵
+
+按鍵沿用 [ChatGPT / Codex 桌面版](https://developers.openai.com/codex/app/commands)
+的習慣（macOS 為 ⌘，Windows/Linux 為 Ctrl）：
+
+| 快捷鍵 | 動作 |
+|---|---|
+| ⌘ , | 打開設定 |
+| ⌘ / | 設定 › 鍵盤快捷鍵 |
+| ⌘ B | 切換左側欄 |
+| ⌘ ⌥ B | 切換右側面板 |
+| ⌘ N、⌘ ⇧ O | 新會話 |
+| ⌘ G | 搜尋會話 |
+| ⌘ ⇧ [、⌘ ⇧ ] | 上／下一個會話 |
+| ⌘ 1…9 | 跳到側欄第 1–9 個會話（⌘9 為最後一個） |
+| ⌘ = / ⌘ - / ⌘ 0 | 放大／縮小／實際大小 |
+| ⌃ ⌘ F、⌘ W、⌘ M、⌘ Q | 全螢幕、關閉、最小化、結束 |
+
+- **按鍵掛在原生選單上**（[shortcuts.js](src/main/shortcuts.js)）。選單列看得到，
+  焦點在輸入框裡也有效，頁面攔不走。同時保留標準的 Edit 選單，否則取代預設選單後
+  ⌘C/⌘V 會失效。
+- **命令單向推給頁面**：選單項以 `executeJavaScript` 在頁面上 dispatch 一個
+  `dsh-desktop:command` DOM 事件，內容只能是命令表中的 id。頁面拿不到任何回呼
+  main process 的管道。
+- **頁面端**：[plugins/dsh-desktop-shortcuts](plugins/dsh-desktop-shortcuts/) 監聽該事件，
+  直接呼叫上游服務（`ctx.layout.toggleSidebar`、`ctx.uiWorkspace.startSession`、
+  `ctx.sidebarRight.toggleExpanded`）。上游把狀態放在元件內部的（設定 modal、會話搜尋框、
+  會話列）則改為點擊使用者會點的那個控制項，以 locale 後的 `aria-label` 找到。
+  它同時在設定裡加一頁「鍵盤快捷鍵」列出所有按鍵。
+- 兩邊的命令表由 `scripts/test-shortcuts.mjs` 確認一致；`pnpm smoke` 會實際點選單項，
+  確認 ⌘,、⌘/、⌘B 在真實視窗中生效。
+
 ---
 
 ## 驗證
@@ -229,7 +261,7 @@ pnpm check
 | 指令 | 內容 |
 |---|---|
 | `pnpm check` | 語法 + 單元 + 認證合約 |
-| `pnpm test:unit` | 能力 token、header 注入、視窗封閉性、harness 探索、應用程式識別、外觀路由的准入規則與設定檔（無視窗） |
+| `pnpm test:unit` | 能力 token、header 注入、視窗封閉性、harness 探索、應用程式識別、外觀路由的准入規則與設定檔、快捷鍵命令表與選單（無視窗） |
 | `node scripts/test-relaunch.mjs` | 在真實視窗內改名 → 重新啟動 → 確認新 bundle 的 `Info.plist` 與新行程（使用拋棄式 userData） |
 | `pnpm test:admission` | 對真實 host 驗證完整認證鏈（14 斷言） |
 | `pnpm probe:host` | 無視窗檢查 tree 狀態、服務、injection rows |
@@ -277,7 +309,7 @@ pnpm smoke
 
 ### 尚未實作
 
-tray、選單、視窗狀態保存、自動更新、打包簽章。
+tray、視窗狀態保存、自動更新、打包簽章。
 
 `.electron-app/` 只是開發用 bundle，不是可散佈的正式打包。
 
