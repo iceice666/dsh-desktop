@@ -153,6 +153,75 @@ driving 的是同一份 profile、憑證與已裝插件。
 | `DSH_DESKTOP_APP_NAME` | 覆寫應用程式名稱，預設取 `package.json` 的 `productName` |
 | `DSH_DESKTOP_ICON` | 覆寫圖標，`.png`（建議 1024×1024）或 `.icns` |
 | `DSH_DESKTOP_BUNDLE_ID` | 覆寫 bundle identifier，預設 `dev.dsh-desktop` |
+| `DSH_DESKTOP_DSH_HOME` | 僅打包版：覆寫 DSH home，預設 `<userData>/dsh-home` |
+
+## 打包與安裝
+
+```bash
+pnpm package          # → dist/<名稱>.app（arm64、ad-hoc 簽章）
+pnpm package:smoke    # 同上，再以拋棄式 userData 實際啟動一次並確認 client 掛載
+pnpm install:app      # 複製到 ~/Applications（--system 則是 /Applications）
+```
+
+打包版是**自帶 DSH** 的獨立 `.app`，不需要另外安裝 `dsh`，也不看 `PATH`：
+
+```
+<名稱>.app/Contents/
+  MacOS/Electron                       原封不動的 Electron 43.0.0
+  Resources/app/                       package.json、src/、plugins/、assets/
+  Resources/app/runtime/node_modules/  DSH harness（約 550 MB）
+```
+
+- **Harness 版本鎖在 [runtime/](runtime/)**。`runtime/pnpm-lock.yaml` 與本機驗證過的
+  全域安裝完全相同，打包時以 `--frozen-lockfile --prod` 重新安裝到 `.build/runtime/`。
+  升級 DSH 就是改這裡——但必須先確認新版的原生模組接受 Electron 43.0.0（見下方
+  版本鎖），打包腳本本身也會拿打包出來的 Electron 實際載入 harness 驗證。
+- **hoisted、非 asar**：pnpm 預設的 isolated 版面會 symlink 回 store，搬到別台機器或
+  移動 app 就斷；`nodeLinker: hoisted` 產生純目錄，打包腳本另外確認 bundle 內沒有
+  指向外部的絕對 symlink。DSH 會以實體路徑載入原生模組、執行 node-pty 的
+  `spawn-helper`、ripgrep 與 worker 腳本，所以不打包成 asar。
+- **不跑 install scripts**：darwin-arm64 的原生模組都有 prebuilt（與全域 `dsh`
+  安裝相同）；唯一需要補的 `spawn-helper` 執行權限由打包腳本設定。
+- **簽章**：只重簽外層 bundle（ad-hoc）。stock Electron 本身已 ad-hoc 簽過，
+  `Resources/` 底下的 harness 以 resource 形式封存。本機建置的 app 沒有 quarantine
+  屬性，可以直接開；傳到其他機器則需右鍵 → 打開，或
+  `xattr -dr com.apple.quarantine <名稱>.app`。
+- 打包永遠使用預設名稱與圖標（`package.json` + `assets/`，或環境變數），不讀
+  本機「應用外觀」的設定，所以結果可重現。
+
+### 打包版與開發版的差異
+
+| | `pnpm start` | 打包版 |
+|---|---|---|
+| Harness | `PATH` 上的 `dsh` | 內建於 bundle |
+| `DSH_HOME` | 沿用（預設 `~/.dsh`） | `~/Library/Application Support/dsh-desktop/dsh-home` |
+| `PATH` | 繼承終端 | 從 login shell 取回 |
+| 工作目錄 | repo | `~` |
+
+- **獨立的 DSH home**。DSH 每次啟動都會把 `$DSH_HOME/profiles/node_modules` 重新
+  指向「這次啟動它的那份安裝」。打包版與 CLI 若共用 `~/.dsh`，兩邊會一直互相改寫
+  這些連結。因此打包版有自己的 profile、憑證與 session（與上游相同作法）；要指定
+  其他位置請設 `DSH_DESKTOP_DSH_HOME`（刻意**不**沿用繼承來的 `DSH_HOME`，免得從
+  終端啟動時悄悄共用 CLI 的 home）。
+- **login-shell PATH**。從 Finder／Dock 開啟時，行程只有 launchd 的
+  `/usr/bin:/bin:/usr/sbin:/sbin`，agent 的工具會找不到 Homebrew、cargo、nvm 等。
+  [shell-environment.js](src/main/shell-environment.js) 以 `$SHELL -ilc`（zsh、bash、
+  fish）跑一次、在隨機標記間讀出環境，只採用 `PATH` 與一小組工具鏈變數
+  （`GOPATH`、`JAVA_HOME`、`LC_*`……），且後者不覆寫既有值。3 秒逾時或失敗時保留原環境。
+
+### Node PTC runtime 與 `process.execPath`
+
+`dsh-ptc-runtime-node` 以 `process.execPath` 執行每一段 Node 程式。在 Electron 裡那是
+Electron app 本身，子行程會以 app 身分啟動並失敗（`invalid control message limit`）。
+`ELECTRON_RUN_AS_NODE` 不能從 main process 匯出——所有 Chromium helper 都會繼承而
+無法啟動——而且該 runtime 本來就會把它從子行程環境剝掉。
+
+[node-shim.js](src/main/node-shim.js) 在 userData 產生一個 `node` shell shim
+（`ELECTRON_RUN_AS_NODE=1 exec <Electron> "$@"`），再以一層產生的 `--patch` overlay
+把它設成 `ptc-runtime` row 的 `nodeExecutable`。只有這一個 row 看得到這個旗標；
+每次啟動重寫，因為 app 搬家後路徑會變。開發版同樣適用。
+`pnpm smoke` 與 `pnpm package:smoke` 都會實際跑一段 PTC 程式驗證；
+`pnpm probe:ptc` 則是單獨的探針（`DSH_PROBE_NO_SHIM=1` 可重現原本的失敗）。
 
 ### 應用程式名稱與圖標
 
@@ -193,6 +262,14 @@ DSH 設定面板裡多一個「應用外觀」區塊，可以改名稱、選圖�
 （Chromium 會從裡面啟動 helper）。改由 [relaunch.js](src/main/relaunch.js) 留下一個
 detached helper：等舊行程結束 → 重建 bundle → 從新 bundle 啟動。
 helper 的輸出寫在 `<userData>/relaunch.log`。
+
+打包版沒有開發用 bundle 可重建，helper 改為直接修改安裝好的 app：改寫
+`Info.plist` 與圖標、在上層目錄可寫且新名稱未被占用時把 `.app` 一併改名
+（否則只改選單列與 Cmd-Tab，Finder 仍是舊檔名），最後重新 ad-hoc 簽章——改
+`Info.plist` 會破壞原本的封存。因此裝在需要管理員權限的位置（如 `/Applications`
+且非本人擁有）時改名會失敗，請裝在 `~/Applications`。
+bundle 目前顯示的名稱與圖標記錄在它自己的 `Info.plist`（`CFBundleName`、
+`DSHDesktopIconSource`），設定頁據此判斷是否還需要重新啟動。
 
 架構依照上游 `dsh-plugin-desktop` 的做法，但只保留必要的部分：
 
@@ -265,13 +342,19 @@ pnpm check
 | 指令 | 內容 |
 |---|---|
 | `pnpm check` | 語法 + 單元 + 認證合約 |
-| `pnpm test:unit` | 能力 token、header 注入、視窗封閉性、harness 探索、應用程式識別、外觀路由的准入規則與設定檔、快捷鍵命令表與選單（無視窗） |
+| `pnpm test:unit` | 能力 token、header 注入、視窗封閉性、harness 探索、應用程式識別、外觀路由的准入規則與設定檔、快捷鍵命令表與選單、打包版面／node shim／login-shell 解析（無視窗） |
 | `node scripts/test-relaunch.mjs` | 在真實視窗內改名 → 重新啟動 → 確認新 bundle 的 `Info.plist` 與新行程（使用拋棄式 userData） |
 | `pnpm test:admission` | 對真實 host 驗證完整認證鏈（14 斷言） |
 | `pnpm probe:host` | 無視窗檢查 tree 狀態、服務、injection rows |
 | `pnpm probe:http` | 區分「host 不服務」與「Electron 無法導覽」 |
 | `pnpm probe:window` | 最小導覽探針，不含 DSH，用於判斷 Chromium 本身能否啟動 |
 | `pnpm smoke` | **啟動真實視窗並確認 client 掛載後自動退出** |
+| `pnpm package:smoke` | 打包後，從 `/` 以拋棄式 userData 與 DSH home 啟動打包版並跑完整 smoke |
+| `pnpm probe:ptc` | 在 Electron main process 內跑一段 Node PTC 程式 |
+
+smoke 若遇到全新的 DSH home，會先像使用者一樣點掉上游的首次啟動 modal
+（「Internal Testing Notice」與「新增 API key」），否則它們會讓頁面 inert、
+快捷鍵檢查失敗。
 
 `pnpm check` 驗證到視窗為止；`pnpm smoke` 驗證視窗本身。後者不信任
 `loadURL` 的回傳（空白頁與錯誤頁同樣會 resolve），而是實際檢查 DOM：
@@ -313,9 +396,9 @@ pnpm smoke
 
 ### 尚未實作
 
-tray、視窗狀態保存、自動更新、打包簽章。
+tray、視窗狀態保存、自動更新、Developer ID 簽章與 notarization、DMG、Intel／universal。
 
-`.electron-app/` 只是開發用 bundle，不是可散佈的正式打包。
+`.electron-app/` 只是開發用 bundle；可散佈的是 `pnpm package` 產生的 `dist/<名稱>.app`。
 
 ### 應用外觀頁的限制
 
