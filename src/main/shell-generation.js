@@ -8,6 +8,8 @@
  * generation's traffic.
  */
 
+import { fileURLToPath } from 'node:url';
+
 import { BrowserWindow, shell } from 'electron';
 
 import { createRendererAccessHeader } from './browser-access.js';
@@ -16,6 +18,12 @@ import {
   authenticateRendererSession,
   installRendererAccessHeader,
 } from './renderer-session.js';
+import { installMacTitlebar } from './titlebar.js';
+
+/** Sandboxed preload that marks the document as the macOS desktop shell. */
+const PLATFORM_MARK_PRELOAD = fileURLToPath(
+  new URL('../preload/platform-mark.cjs', import.meta.url),
+);
 
 /** Persistent partition isolated from the default and any auxiliary session. */
 export const RENDERER_SESSION_PARTITION = 'persist:dsh-desktop-renderer';
@@ -62,15 +70,24 @@ export class ShellGeneration {
         contextIsolation: true,
         nodeIntegration: false,
         // No Electron API reaches the page: the desktop adds no renderer IPC
-        // plugin system, so the strict sandbox stays on.
+        // plugin system, so the strict sandbox stays on — the preload below
+        // runs sandboxed too and exposes nothing.
         sandbox: true,
         webSecurity: true,
         partition: RENDERER_SESSION_PARTITION,
+        // Sets only `<html data-platform="darwin">`, which switches the
+        // upstream client to its hidden-inset titlebar layout (native drag
+        // regions, traffic-light room). It bridges nothing into the page.
+        preload: PLATFORM_MARK_PRELOAD,
       },
     });
     this.#window = window;
 
     const renderer = window.webContents;
+
+    // Make the top edge behave like the native titlebar hiddenInset removed:
+    // drag to move, double-click to zoom (per the system setting).
+    installMacTitlebar(renderer, this.#log);
 
     // The window is created hidden so the first paint is the loaded client
     // rather than an empty frame.
@@ -171,12 +188,53 @@ export class ShellGeneration {
       lastSeen = JSON.stringify(state);
       if (state.hasBoot === true && state.rootChildren > 0) {
         this.#log(`client mounted: ${lastSeen}`);
+        await this.#verifyTitlebar(renderer);
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
 
     throw new Error(`dsh-desktop: the client did not mount in time; last saw ${lastSeen}`);
+  }
+
+  /**
+   * Confirm the macOS titlebar layout is active: the preload marked the
+   * document, and the page exposes at least one native drag region along its
+   * top edge (where the hidden titlebar used to be).
+   *
+   * @param renderer - the window's `webContents`.
+   * @throws on macOS when the mark or the drag regions are missing.
+   */
+  async #verifyTitlebar(renderer) {
+    if (process.platform !== 'darwin') return;
+    const state = await renderer.executeJavaScript(
+      `(() => {
+        const drag = [...document.querySelectorAll('*')]
+          .filter((el) => getComputedStyle(el).getPropertyValue('-webkit-app-region') === 'drag')
+          .map((el) => {
+            const r = el.getBoundingClientRect();
+            return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
+          })
+          .filter(([, y, w, h]) => w > 0 && h > 0 && y < 60);
+        // The window-wide strip is a pseudo-element, invisible to the query above.
+        const strip = getComputedStyle(document.body, '::before');
+        if (strip.getPropertyValue('-webkit-app-region') === 'drag' && strip.position === 'fixed') {
+          drag.push([0, 0, innerWidth, Math.round(parseFloat(strip.height))]);
+        }
+        return { platform: document.documentElement.dataset.platform ?? null, drag };
+      })()`,
+      true,
+    );
+    this.#log(`titlebar: ${JSON.stringify(state)}`);
+    const screenshot = process.env.DSH_DESKTOP_SMOKE_HOME_SCREENSHOT;
+    if (screenshot !== undefined) {
+      const { writeFileSync } = await import('node:fs');
+      writeFileSync(screenshot, (await renderer.capturePage()).toPNG());
+      this.#log(`home screenshot written to ${screenshot}`);
+    }
+    if (state.platform !== 'darwin' || state.drag.length === 0) {
+      throw new Error(`dsh-desktop: the macOS titlebar drag regions are missing; saw ${JSON.stringify(state)}`);
+    }
   }
 
   /**

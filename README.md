@@ -24,10 +24,28 @@ webPreferences: {
   sandbox: true,
   webSecurity: true,
   partition: 'persist:dsh-desktop-renderer',
+  preload: 'src/preload/platform-mark.cjs',
 }
 ```
 
-沒有 preload，因為沒有東西需要橋接。
+唯一的 preload 只在 `<html>` 上設 `data-platform="darwin"`，不橋接任何東西
+（沒有 `contextBridge`、沒有 IPC），並且同樣跑在 sandbox 裡。
+
+### macOS 標題列
+
+`titleBarStyle: 'hiddenInset'` 拿掉了原生標題列，視窗只能透過頁面宣告的
+`-webkit-app-region: drag` 區域拖動。
+
+- **上游佈局開關**：上游 client 已內建 macOS 版面（header 拖曳區、控制項的
+  no-drag 例外、紅綠燈留白），但只在 `<html data-platform="darwin">` 時啟用，
+  並預期由 Electron preload 設定。[platform-mark.cjs](src/preload/platform-mark.cjs)
+  就只做這件事。
+- **全寬拖曳條**：上游只在側欄頂端與開啟中的對話標題列宣告拖曳區；首頁、設定頁
+  與側欄收合時頂端仍無法拖動。[titlebar.js](src/main/titlebar.js) 用
+  `insertCSS` 在視窗頂端補一條 38px 的 `drag` 條。按鈕、輸入框、連結等互動元素
+  以 `no-drag` 挖出，modal 開啟時整條停用。
+- **雙擊**：拖曳區上的雙擊由 Electron 原生處理，依照「系統設定 › 桌面與 Dock ›
+  連按兩下視窗標題列以…」的選擇縮放或縮到 Dock。
 
 ### 兩段式 session 認證
 
@@ -195,7 +213,8 @@ helper 的輸出寫在 `<userData>/relaunch.log`。
 magic bytes 並試解碼，再複製進 userData（以內容雜湊命名），所以就算原檔之後被
 移走，設定也還在。
 
-主視窗仍然沒有 preload、`sandbox: true`，不暴露任何 Electron API。
+主視窗仍然 `sandbox: true`，不暴露任何 Electron API（唯一的 preload 只設
+`data-platform` 屬性）。
 
 ---
 

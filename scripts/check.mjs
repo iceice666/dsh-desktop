@@ -33,11 +33,12 @@ const failures = [];
 process.stdout.write('\n── syntax\n');
 const sourceDirectories = [
   join('src', 'main'),
+  join('src', 'preload'),
   join('plugins', 'dsh-desktop-branding', 'lib'),
 ];
 const sources = sourceDirectories.flatMap((directory) =>
   readdirSync(join(root, directory))
-    .filter((name) => name.endsWith('.js'))
+    .filter((name) => name.endsWith('.js') || name.endsWith('.cjs'))
     .map((name) => join(directory, name)),
 );
 for (const relative of sources) {
