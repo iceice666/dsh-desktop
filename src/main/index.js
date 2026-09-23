@@ -166,6 +166,7 @@ async function main() {
   }
 
   if (smoke) {
+    await generation.dismissOnboarding();
     // Through the installed menu items, so the accelerator wiring is covered
     // and not just the page-side listener.
     await generation.verifyShortcuts((id) => {

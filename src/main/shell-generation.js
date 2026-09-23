@@ -340,6 +340,42 @@ export class ShellGeneration {
   }
 
   /**
+   * Smoke helper for a fresh DSH home: step through upstream's first-run
+   * onboarding modals (the testing notice, then "add an API key") the way a
+   * user would, so the checks that follow see the ordinary window. The modals
+   * make the rest of the page inert and cannot be dismissed with Escape.
+   *
+   * Buttons are matched by their shipped labels in both locales. Returns once
+   * no onboarding modal has been showing for a short while.
+   */
+  async dismissOnboarding() {
+    const window = this.#window;
+    if (window === undefined || window.isDestroyed()) throw new Error('dsh-desktop: no window');
+    const labels = JSON.stringify(['Continue', '继续', 'Configure later', '稍后配置']);
+    const click = `(() => {
+      const dialog = document.querySelector('[role="dialog"][aria-modal="true"]');
+      if (dialog === null) return 'none';
+      const button = [...dialog.querySelectorAll('button')]
+        .find((candidate) => ${labels}.includes(candidate.textContent.trim()) && !candidate.disabled);
+      if (button === undefined) return 'other';
+      button.click();
+      return 'clicked';
+    })()`;
+    const deadline = Date.now() + 15_000;
+    let quietSince = Date.now();
+    while (Date.now() < deadline) {
+      const outcome = await window.webContents.executeJavaScript(click, true);
+      if (outcome === 'clicked') {
+        this.#log?.('smoke: dismissed a first-run onboarding modal');
+        quietSince = Date.now();
+      } else if (Date.now() - quietSince > 1_500) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+
+  /**
    * Smoke check for keyboard shortcuts: fire the real menu items and confirm
    * the page reacted — ⌘, opens the Settings modal, ⌘/ opens the shortcuts
    * page, ⌘B toggles the sidebar.
@@ -357,7 +393,10 @@ export class ShellGeneration {
         if ((await probe(expression)) === true) return;
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
-      throw new Error(`dsh-desktop: shortcut check "${label}" failed`);
+      const dialogs = await probe(
+        `JSON.stringify([...document.querySelectorAll('[role="dialog"]')].map((d) => (d.getAttribute('aria-label') ?? '') + ' | ' + d.textContent.slice(0, 160)))`,
+      ).catch(() => '?');
+      throw new Error(`dsh-desktop: shortcut check "${label}" failed; dialogs: ${dialogs}`);
     };
     const modal = `document.querySelector('[role="dialog"][aria-modal="true"]')`;
     const escape = `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`;
