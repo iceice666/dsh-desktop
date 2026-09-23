@@ -46,6 +46,10 @@ webPreferences: {
   以 `no-drag` 挖出，modal 開啟時整條停用。
 - **雙擊**：拖曳區上的雙擊由 Electron 原生處理，依照「系統設定 › 桌面與 Dock ›
   連按兩下視窗標題列以…」的選擇縮放或縮到 Dock。
+- **半透明側欄**：視窗使用 `vibrancy: 'sidebar'` 並以全透明背景建立，讓原生
+  側欄材質透出來（與 Codex、Finder 相同）。上游在 `data-platform="darwin"` 下
+  已把 `html`、`body` 與版面 frame 設為透明、側欄欄位以 60% 不透明度繪製，
+  中央欄則保持實色底，所以只有左側邊欄呈現半透明。
 
 ### 兩段式 session 認證
 
