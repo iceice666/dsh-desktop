@@ -64,7 +64,7 @@ function harnessResolutionPaths(anchor) {
  * @returns `{ ctx, shutdown, dispose }` for the live generation.
  */
 export async function startHost(options) {
-  const { profile, anchor, port, log } = options;
+  const { profile, anchor, port, log, extraPatchFiles = [] } = options;
 
   const paths = harnessResolutionPaths(anchor);
   const { runProfile } = await importHarness('@deepseek-ai/dsh/lib/profile-boot.js', paths);
@@ -88,7 +88,7 @@ export async function startHost(options) {
     args: ['--no-open', '--port', String(port ?? 0)],
     // Desktop-only rows (the branding Settings page) arrive as an overlay, so
     // the user's profile on disk is never edited.
-    patchFiles: [DESKTOP_PATCH_FILE],
+    patchFiles: [DESKTOP_PATCH_FILE, ...extraPatchFiles],
     environment,
   });
 

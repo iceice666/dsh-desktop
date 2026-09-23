@@ -15,6 +15,7 @@ import { createBrandingRoutes } from './branding-routes.js';
 import { resolveBranding, userDataDirectory } from './branding.js';
 import { findHarnessAnchor } from './find-harness.js';
 import { startHost, resolveOrigin, resolveAuthenticationUrl } from './host.js';
+import { installNodeShim } from './node-shim.js';
 import { scheduleRelaunch } from './relaunch.js';
 import { ShellGeneration } from './shell-generation.js';
 import { buildMenuTemplate, commandScript } from './shortcuts.js';
@@ -124,11 +125,19 @@ async function main() {
   const { anchor, source } = findHarnessAnchor();
   log(`using DSH from ${source}`);
 
+  // DSH runs Node PTC programs with `process.execPath`, which here is the
+  // Electron app. The shim makes that child a Node process; see node-shim.js.
+  const { overlay: nodeShimOverlay } = installNodeShim({
+    userData: app.getPath('userData'),
+    executable: process.execPath,
+  });
+
   host = await startHost({
     profile: process.env.DSH_DESKTOP_PROFILE ?? 'web',
     anchor,
     port: Number(process.env.DSH_DESKTOP_PORT ?? 0),
     log,
+    extraPatchFiles: [nodeShimOverlay],
   });
 
   const origin = resolveOrigin(host.ctx);
@@ -165,10 +174,36 @@ async function main() {
       item.click();
     });
     await generation.verifyBrandingPage();
+    await verifyNodeRuntime();
     process.stdout.write('dsh-desktop: SMOKE OK\n');
     await teardown();
     app.exit(0);
   }
+}
+
+/**
+ * Run one Node PTC program through the live tree.
+ *
+ * This proves the node shim: without it the runtime spawns the Electron app
+ * itself, which fails with "invalid control message limit". Smoke-only.
+ */
+async function verifyNodeRuntime() {
+  const ptc = host.ctx.get('ptcRuntime');
+  if (ptc === undefined) {
+    log('smoke: profile mounts no ptcRuntime; skipping the Node runtime check');
+    return;
+  }
+  const result = await ptc.run({
+    program: 'return `node ${process.versions.node}`',
+    bindings: [],
+    cwd: app.getPath('home'),
+    timeoutMs: 30_000,
+    sandboxPolicy: { mode: 'danger-full-access' },
+  });
+  if (typeof result?.value !== 'string' || !result.value.startsWith('node ')) {
+    throw new Error(`dsh-desktop: Node PTC runtime failed: ${JSON.stringify(result).slice(0, 400)}`);
+  }
+  log(`smoke: Node PTC runtime ok (${result.value})`);
 }
 
 /**
