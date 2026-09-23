@@ -3,13 +3,19 @@
  *
  * The renderer runs the stock upstream web client against the host's own
  * loopback carrier. No Electron API is exposed to the page and no renderer IPC
- * plugin system exists, so the window keeps Chromium's strict sandbox.
+ * plugin system exists, so the window keeps Chromium's strict sandbox. The one
+ * desktop-specific page (Settings → Appearance) talks to routes this process
+ * registers on the host's `webServer`, gated to this window's own traffic.
  */
 
 import { app } from 'electron';
 
+import { BrandingController } from './branding-controller.js';
+import { createBrandingRoutes } from './branding-routes.js';
+import { resolveBranding, userDataDirectory } from './branding.js';
 import { findHarnessAnchor } from './find-harness.js';
 import { startHost, resolveOrigin, resolveAuthenticationUrl } from './host.js';
+import { scheduleRelaunch } from './relaunch.js';
 import { ShellGeneration } from './shell-generation.js';
 
 const verbose = process.env.DSH_DESKTOP_VERBOSE === '1';
@@ -22,24 +28,79 @@ function log(message) {
   if (verbose) process.stdout.write(`dsh-desktop: ${message}\n`);
 }
 
-// Chromium writes its caches under userData. Honour an explicit override so the
-// app can run with a constrained HOME (a sandboxed checkout, CI) where the
-// platform default is not writable; without a writable cache directory the very
-// first navigation fails with ERR_FAILED.
-const userDataOverride = process.env.DSH_DESKTOP_USER_DATA;
-if (userDataOverride !== undefined) app.setPath('userData', userDataOverride);
+// Pin userData before anything reads it. Electron derives the default from the
+// app name, so a rename would otherwise move cookies and local storage to a
+// fresh directory. `userDataDirectory` is also what the launcher uses to find
+// saved branding, so both sides agree (and both honour DSH_DESKTOP_USER_DATA,
+// for a constrained HOME where the platform default is not writable).
+app.setPath('userData', userDataDirectory());
+
+/**
+ * Identity this process launched with — what the bundle's Info.plist shows
+ * for as long as it runs. Later Settings changes are compared against it.
+ */
+const launched = resolveBranding();
+
+// Electron's own menus, the About panel, and notifications read this. The
+// menu-bar title and Cmd-Tab label come from the bundle's Info.plist instead,
+// which `scripts/start.mjs` stamps with the same name.
+app.setName(launched.name);
 
 /** Live host tree for the current generation. */
 let host;
 /** Live shell generation. */
 let generation;
+/** Disposers for the branding routes on the live host. */
+let removeRoutes = [];
 /** Set once shutdown has begun, so `before-quit` runs its teardown once. */
 let quitting = false;
+
+const branding = new BrandingController({
+  launched,
+  log,
+  relaunch: async () => {
+    // The helper waits for this process to exit, rebuilds the bundle with the
+    // saved identity, and starts it. Forward the Chromium flags this instance
+    // was started with (e.g. the sandbox workaround) so the new one can start
+    // in the same environment.
+    scheduleRelaunch({
+      executable: process.execPath,
+      args: process.argv.slice(1).filter((arg) => arg.startsWith('--')),
+      env: process.env,
+    });
+    app.quit();
+  },
+});
+
+/**
+ * Register the branding routes on the live host.
+ * @param origin - carrier origin.
+ */
+function registerBrandingRoutes(origin) {
+  const webServer = host.ctx.get('webServer');
+  const connection = host.ctx.get('connection');
+  const routes = createBrandingRoutes({
+    origin,
+    // Read through the generation on every request, so a released window's
+    // capability is never accepted.
+    accessHeader: () => generation?.accessHeader,
+    requestRejection: (req) => connection.requestRejection(req),
+    controller: branding,
+    log,
+  });
+  removeRoutes = routes.map(({ path, handler }) =>
+    webServer.register({ kind: 'exact', path, handler }),
+  );
+}
 
 /**
  * Boot the host tree and mount the first shell generation.
  */
 async function main() {
+  // Dock icon and About panel. Set at runtime as well as in the bundle so a
+  // plain `electron .` launch, which runs the stock Electron.app, is branded.
+  branding.applyInitial();
+
   const { anchor, source } = findHarnessAnchor();
   log(`using DSH from ${source}`);
 
@@ -52,6 +113,7 @@ async function main() {
 
   const origin = resolveOrigin(host.ctx);
   const authenticationUrl = resolveAuthenticationUrl(host.ctx, origin);
+  registerBrandingRoutes(origin);
 
   // Smoke mode verifies that the client really mounted and then exits, so a
   // launch can be validated without a human watching the window.
@@ -61,11 +123,21 @@ async function main() {
   await generation.mount({
     origin,
     authenticationUrl,
-    title: 'DeepSeek Harness',
+    title: launched.name,
     verifyClient: smoke,
   });
 
+  // End-to-end exercise of the rename + relaunch path, driven from inside the
+  // page exactly as the Settings section does. Test-only; see
+  // scripts/test-relaunch.mjs.
+  const rename = process.env.DSH_DESKTOP_TEST_RENAME;
+  if (rename !== undefined && !smoke) {
+    await generation.exerciseRename(rename);
+    return;
+  }
+
   if (smoke) {
+    await generation.verifyBrandingPage();
     process.stdout.write('dsh-desktop: SMOKE OK\n');
     await teardown();
     app.exit(0);
@@ -86,6 +158,14 @@ async function teardown() {
       await shell.release();
     } catch (error) {
       process.stderr.write(`dsh-desktop: shell release failed: ${String(error)}\n`);
+    }
+  }
+
+  for (const remove of removeRoutes.splice(0)) {
+    try {
+      remove();
+    } catch {
+      // The webServer may already be gone; its routes went with it.
     }
   }
 

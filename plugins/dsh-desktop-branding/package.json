@@ -1,0 +1,22 @@
+{
+  "name": "dsh-desktop-branding",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Settings page for the desktop app's name and icon. Browser-only; the routes it calls are registered by the desktop main process.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}

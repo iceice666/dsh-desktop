@@ -10,9 +10,14 @@
  */
 
 import { createRequire } from 'node:module';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+
+import { PROJECT_ROOT } from './branding.js';
 
 const require = createRequire(import.meta.url);
+
+/** Overlay inserting the desktop's own plugins into whatever profile boots. */
+export const DESKTOP_PATCH_FILE = join(PROJECT_ROOT, 'plugins', 'cordis.patch.yml');
 
 /**
  * Resolve a DSH package from the installed harness.
@@ -81,7 +86,9 @@ export async function startHost(options) {
   const started = await runProfile({
     profile,
     args: ['--no-open', '--port', String(port ?? 0)],
-    patchFiles: [],
+    // Desktop-only rows (the branding Settings page) arrive as an overlay, so
+    // the user's profile on disk is never edited.
+    patchFiles: [DESKTOP_PATCH_FILE],
     environment,
   });
 

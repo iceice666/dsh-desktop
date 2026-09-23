@@ -19,6 +19,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
+import { ensureBrandedBundle } from '../src/main/branded-bundle.js';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 
@@ -26,8 +28,10 @@ const extraFlags = (process.env.DSH_DESKTOP_ELECTRON_FLAGS ?? '')
   .split(' ')
   .filter((flag) => flag.length > 0);
 
-const electron = join(root, 'node_modules', '.bin', 'electron');
-const result = spawnSync(electron, [...extraFlags, '.'], {
+// Launch through the branded bundle, exactly as `pnpm start` does, so the smoke
+// also covers the bundle build.
+const electron = ensureBrandedBundle();
+const result = spawnSync(electron, [...extraFlags, root], {
   cwd: root,
   encoding: 'utf8',
   env: { ...process.env, DSH_DESKTOP_SMOKE: '1', DSH_DESKTOP_VERBOSE: '1' },

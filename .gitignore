@@ -5,6 +5,9 @@ node_modules/
 # under ~/Library/Caches is not writable in every environment.
 .electron-cache/
 
+# Electron.app copy stamped with the app's name and icon by scripts/start.mjs.
+.electron-app/
+
 # Chromium userData (caches, cookies, local storage) for local runs.
 .electron-userdata/
 

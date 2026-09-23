@@ -31,9 +31,17 @@ function step(label, args) {
 const failures = [];
 
 process.stdout.write('\n── syntax\n');
-const sources = readdirSync(join(root, 'src', 'main')).filter((name) => name.endsWith('.js'));
-for (const name of sources) {
-  const relative = join('src', 'main', name);
+const sourceDirectories = [
+  join('src', 'main'),
+  join('plugins', 'dsh-desktop-branding', 'lib'),
+];
+const sources = sourceDirectories.flatMap((directory) =>
+  readdirSync(join(root, directory))
+    .filter((name) => name.endsWith('.js'))
+    .map((name) => join(directory, name)),
+);
+for (const relative of sources) {
+  const name = relative;
   const result = spawnSync(process.execPath, ['--check', relative], {
     cwd: root,
     stdio: 'inherit',
@@ -52,6 +60,14 @@ if (!step('unit: window containment policy', ['scripts/test-navigation.mjs'])) {
 
 if (!step('unit: harness discovery', ['scripts/test-find-harness.mjs'])) {
   failures.push('unit:find-harness');
+}
+
+if (!step('unit: application identity', ['scripts/test-branding.mjs'])) {
+  failures.push('unit:branding');
+}
+
+if (!step('unit: branding routes and saved preferences', ['scripts/test-branding-routes.mjs'])) {
+  failures.push('unit:branding-routes');
 }
 
 if (!step('admission: live host contract', ['scripts/test-admission.mjs'])) {

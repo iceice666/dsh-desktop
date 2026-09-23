@@ -1,0 +1,22 @@
+# Desktop-only overlay, passed to `runProfile` as a `--patch` layer by
+# src/main/host.js. It never touches the user's own profile, so `dsh web`
+# launched from a terminal is unaffected.
+#
+# Relative names are anchored beside this file by the overlay loader.
+- insert:
+    - id: dsh-desktop-branding
+      # The entry file, not the package directory: ESM resolution does not
+      # read `main` for a file URL. client-modules walks up from it to find
+      # the package.json that declares `dsh.client`.
+      name: ./dsh-desktop-branding/lib/index.js
+
+# The window is the surface: nobody reads the terminal line, and it carries the
+# launch token, which should not land in terminal scrollback or a log file.
+# A patch replaces the row's whole config, so every key is restated with the
+# values dsh-web-app itself sets.
+- id: web-runtime
+  config:
+    openBrowser: false
+    printUrl: false
+    surfaceContext: true
+    trustedHosts: !!js ctx.webStartup.trustedHosts

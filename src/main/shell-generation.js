@@ -22,6 +22,7 @@ export const RENDERER_SESSION_PARTITION = 'persist:dsh-desktop-renderer';
 
 export class ShellGeneration {
   #window;
+  #accessHeader;
   #removeAccessHeader;
   #released = false;
   #log;
@@ -46,6 +47,7 @@ export class ShellGeneration {
    */
   async mount(spec) {
     const accessHeader = createRendererAccessHeader();
+    this.#accessHeader = accessHeader;
 
     const window = new BrowserWindow({
       width: 1440,
@@ -177,6 +179,133 @@ export class ShellGeneration {
     throw new Error(`dsh-desktop: the client did not mount in time; last saw ${lastSeen}`);
   }
 
+  /**
+   * Smoke check for the desktop Settings page: the branding plugin's client
+   * bundle is in the boot graph and its routes accept this window's traffic.
+   *
+   * Runs the request from inside the page, so it exercises the real path — the
+   * session cookie plus the capability header the renderer session attaches.
+   *
+   * @throws when the plugin is missing or a route rejects the window.
+   */
+  async verifyBrandingPage() {
+    const window = this.#window;
+    if (window === undefined || window.isDestroyed()) throw new Error('dsh-desktop: no window');
+    const result = await window.webContents.executeJavaScript(
+      `(async () => {
+        const boot = globalThis.__DSH_BOOT__;
+        const graph = JSON.stringify(boot ?? {});
+        const response = await fetch('/api/dsh-desktop/branding', { cache: 'no-store' });
+        const body = await response.json().catch(() => ({}));
+        return {
+          pluginInBootGraph: graph.includes('dsh-desktop-branding'),
+          status: response.status,
+          name: body.name,
+          restartRequired: body.restartRequired,
+        };
+      })()`,
+      true,
+    );
+    this.#log(`branding page: ${JSON.stringify(result)}`);
+    if (result.pluginInBootGraph !== true) {
+      throw new Error('dsh-desktop: the branding plugin is missing from the boot graph');
+    }
+    if (result.status !== 200 || typeof result.name !== 'string') {
+      throw new Error(`dsh-desktop: branding route answered ${String(result.status)}`);
+    }
+
+    // Open Settings and the page itself, and confirm the section rendered
+    // with its controls: the slot registration and the component, not just
+    // the bundle's presence.
+    const deadline = Date.now() + 15_000;
+    let seen;
+    while (Date.now() < deadline) {
+      seen = await window.webContents.executeJavaScript(
+        `(() => {
+          const section = document.querySelector('.dshDesktopBranding');
+          if (section !== null) {
+            const box = (el) => {
+              if (el === null) return null;
+              const r = el.getBoundingClientRect();
+              return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
+            };
+            const img = section.querySelector('img.icon');
+            return {
+              rendered: true,
+              hasNameInput: section.querySelector('#dsh-desktop-app-name') !== null,
+              buttons: [...section.querySelectorAll('button')].map((b) => b.textContent),
+              hasIcon: img !== null,
+              iconLoaded: img !== null && img.complete && img.naturalWidth > 0,
+              layout: {
+                viewport: [innerWidth, innerHeight],
+                section: box(section),
+                input: box(section.querySelector('input')),
+                icon: box(img),
+                activeNav: [...document.querySelectorAll('button')]
+                  .filter((b) => /^(应用外观|Appearance)$/.test((b.textContent ?? '').trim()))
+                  .map((b) => getComputedStyle(b).backgroundColor),
+                headingFont: getComputedStyle(section.querySelector('h2')).fontSize,
+                color: getComputedStyle(section).color,
+              },
+            };
+          }
+          const buttons = [...document.querySelectorAll('button')];
+          const nav = buttons.find((b) => /^(应用外观|Appearance)$/.test((b.textContent ?? '').trim()));
+          if (nav !== undefined) { nav.click(); return { rendered: false, step: 'nav' }; }
+          const trigger = buttons.find((b) => /^(设置|Settings)$/.test((b.textContent ?? '').trim()));
+          if (trigger !== undefined) { trigger.click(); return { rendered: false, step: 'trigger' }; }
+          return { rendered: false, step: 'none' };
+        })()`,
+        true,
+      );
+      if (seen.rendered === true) break;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    this.#log(`branding section: ${JSON.stringify(seen)}`);
+    const screenshot = process.env.DSH_DESKTOP_SMOKE_SCREENSHOT;
+    if (screenshot !== undefined && seen?.rendered === true) {
+      const { writeFileSync } = await import('node:fs');
+      writeFileSync(screenshot, (await window.webContents.capturePage()).toPNG());
+      this.#log(`screenshot written to ${screenshot}`);
+    }
+    if (seen?.rendered !== true || seen.hasNameInput !== true) {
+      throw new Error(`dsh-desktop: the branding section did not render; last saw ${JSON.stringify(seen)}`);
+    }
+  }
+
+  /**
+   * Test hook: rename and restart through the page's own requests, the same
+   * calls the Settings section makes.
+   * @param name - new display name.
+   */
+  async exerciseRename(name) {
+    const window = this.#window;
+    if (window === undefined || window.isDestroyed()) throw new Error('dsh-desktop: no window');
+    const result = await window.webContents.executeJavaScript(
+      `(async () => {
+        const post = (path, body) => fetch(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const saved = await (await post('/api/dsh-desktop/branding/name', { name: ${JSON.stringify(name)} })).json();
+        const restart = await post('/api/dsh-desktop/branding/restart', {});
+        return { saved, restartStatus: restart.status };
+      })()`,
+      true,
+    );
+    process.stdout.write(`dsh-desktop: rename exercised: ${JSON.stringify(result)}\n`);
+  }
+
+  /**
+   * This generation's renderer capability, for host routes that must accept
+   * only this window's traffic. `undefined` once released, so a route checked
+   * after teardown fails closed.
+   */
+  get accessHeader() {
+    return this.#released ? undefined : this.#accessHeader;
+  }
+
   /** Whether the window is still usable. */
   get alive() {
     return this.#window !== undefined && !this.#window.isDestroyed();
@@ -205,6 +334,7 @@ export class ShellGeneration {
 
     this.#removeAccessHeader?.();
     this.#removeAccessHeader = undefined;
+    this.#accessHeader = undefined;
 
     const window = this.#window;
     this.#window = undefined;

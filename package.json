@@ -1,15 +1,20 @@
 {
   "name": "dsh-desktop",
+  "productName": "DeepSeek Harness",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "DeepSeek Harness macOS desktop client: Electron shell hosting the DSH Cordis tree in-process",
   "main": "src/main/index.js",
+  "dshDesktop": {
+    "bundleId": "dev.dsh-desktop"
+  },
   "scripts": {
-    "start": "electron .",
-    "start:verbose": "DSH_DESKTOP_VERBOSE=1 electron .",
+    "start": "node scripts/start.mjs",
+    "start:verbose": "DSH_DESKTOP_VERBOSE=1 node scripts/start.mjs",
+    "start:plain": "electron .",
     "check": "node scripts/check.mjs",
-    "test:unit": "node scripts/test-access-header.mjs && node scripts/test-navigation.mjs && node scripts/test-find-harness.mjs",
+    "test:unit": "node scripts/test-access-header.mjs && node scripts/test-navigation.mjs && node scripts/test-find-harness.mjs && node scripts/test-branding.mjs && node scripts/test-branding-routes.mjs",
     "test:admission": "node scripts/test-admission.mjs",
     "probe:host": "node scripts/probe-host.mjs",
     "probe:http": "node scripts/probe-http.mjs",
