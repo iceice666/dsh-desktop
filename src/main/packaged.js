@@ -24,6 +24,13 @@ import { PROJECT_ROOT, userDataDirectory } from './branding.js';
 /** Info.plist key recording which icon the bundle was stamped with. */
 export const ICON_SOURCE_KEY = 'DSHDesktopIconSource';
 
+/**
+ * Info.plist key naming whoever owns the installed bundle. `nix` means the
+ * bundle was built by the flake and is read-only in the store (or a copy the
+ * next `switch` overwrites), so the app must never rewrite or rename it.
+ */
+export const MANAGED_BY_KEY = 'DSHDesktopManagedBy';
+
 /** Value of {@link ICON_SOURCE_KEY} when the bundled default icon was used. */
 export const DEFAULT_ICON_SOURCE = 'default';
 
@@ -74,6 +81,16 @@ export function packagedDshHome(env = process.env) {
   const override = env.DSH_DESKTOP_DSH_HOME;
   if (override !== undefined && override.length > 0) return override;
   return join(userDataDirectory(env), 'dsh-home');
+}
+
+/**
+ * @param root - project root.
+ * @returns who manages the bundle (`'nix'`), or `undefined` when the app may
+ *   restamp itself.
+ */
+export function bundleManager(root = PROJECT_ROOT) {
+  if (!isPackagedLayout(root)) return undefined;
+  return readBundleKey(packagedAppBundle(root), MANAGED_BY_KEY);
 }
 
 /**

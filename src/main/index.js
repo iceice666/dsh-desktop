@@ -17,6 +17,7 @@ import { findHarnessAnchor } from './find-harness.js';
 import { startHost, resolveOrigin, resolveAuthenticationUrl } from './host.js';
 import { installNodeShim } from './node-shim.js';
 import {
+  bundleManager,
   ICON_SOURCE_KEY,
   isPackagedLayout,
   packagedAppBundle,
@@ -93,6 +94,7 @@ let quitting = false;
 const branding = new BrandingController({
   launched,
   log,
+  managedBy: bundleManager(),
   relaunch: async () => {
     // The helper waits for this process to exit, rebuilds the bundle with the
     // saved identity, and starts it. Forward the Chromium flags this instance

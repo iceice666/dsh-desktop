@@ -32,17 +32,21 @@ export class BrandingController {
   #launched;
   #relaunch;
   #log;
+  #managedBy;
 
   /**
-   * @param options - `{ launched, relaunch, log }`: what the running bundle
-   *   shows, as `{ name, icon }` with `icon` an {@link iconIdentity} value; a
-   *   function performing the relaunch; and a diagnostics sink.
+   * @param options - `{ launched, relaunch, log, managedBy }`: what the
+   *   running bundle shows, as `{ name, icon }` with `icon` an
+   *   {@link iconIdentity} value; a function performing the relaunch; a
+   *   diagnostics sink; and who manages the bundle (`'nix'` makes it
+   *   read-only, so saved choices never trigger a restamping relaunch).
    */
   constructor(options) {
     this.#preferences = new BrandingPreferences(userDataDirectory());
     this.#launched = options.launched;
     this.#relaunch = options.relaunch;
     this.#log = options.log;
+    this.#managedBy = options.managedBy;
   }
 
   /** Apply the Dock icon and About panel at startup. */
@@ -70,6 +74,7 @@ export class BrandingController {
       hasIcon: current.iconPng !== undefined || current.iconIcns !== undefined,
       launchedName: this.#launched.name,
       restartRequired: this.#restartRequired(current),
+      managedBy: this.#managedBy ?? null,
       maxNameLength: MAX_NAME_LENGTH,
       // A macOS-only concept: other platforms have no bundle to rebuild.
       platform: process.platform,
@@ -134,6 +139,9 @@ export class BrandingController {
 
   /** Relaunch into a bundle rebuilt with the saved identity. */
   async restart() {
+    if (this.#managedBy !== undefined) {
+      throw new Error(`dsh-desktop: this app is managed by ${this.#managedBy}; change its name and icon there`);
+    }
     this.#log?.('relaunching to apply branding');
     await this.#relaunch();
   }
@@ -177,6 +185,8 @@ export class BrandingController {
    */
   #restartRequired(current) {
     if (process.platform !== 'darwin') return false;
+    // A managed bundle cannot be restamped, so no relaunch could apply this.
+    if (this.#managedBy !== undefined) return false;
     const launched = this.#launched;
     return launched.name !== current.name || launched.icon !== iconIdentity(current);
   }

@@ -263,11 +263,24 @@ export class ShellGeneration {
         const graph = JSON.stringify(boot ?? {});
         const response = await fetch('/api/dsh-desktop/branding', { cache: 'no-store' });
         const body = await response.json().catch(() => ({}));
+        // A Nix-managed bundle must refuse to relaunch. Only asked when managed:
+        // elsewhere this request would really restart the app.
+        let managedRestart;
+        if (body.managedBy !== null && body.managedBy !== undefined) {
+          const restart = await fetch('/api/dsh-desktop/branding/restart', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: '{}',
+          });
+          managedRestart = restart.status;
+        }
         return {
           pluginInBootGraph: graph.includes('dsh-desktop-branding'),
           status: response.status,
           name: body.name,
           restartRequired: body.restartRequired,
+          managedBy: body.managedBy,
+          managedRestart,
         };
       })()`,
       true,
@@ -278,6 +291,9 @@ export class ShellGeneration {
     }
     if (result.status !== 200 || typeof result.name !== 'string') {
       throw new Error(`dsh-desktop: branding route answered ${String(result.status)}`);
+    }
+    if (result.managedBy !== null && (result.managedRestart !== 409 || result.restartRequired !== false)) {
+      throw new Error(`dsh-desktop: a ${String(result.managedBy)}-managed bundle accepted a restamping relaunch`);
     }
 
     // Open Settings and the page itself, and confirm the section rendered

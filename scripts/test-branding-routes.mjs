@@ -35,8 +35,9 @@ function check(name, condition) {
 // ── routes ────────────────────────────────────────────────────────────────
 
 const calls = [];
+let managedBy = null;
 const controller = {
-  state: () => { calls.push('state'); return { name: 'X' }; },
+  state: () => { calls.push('state'); return { name: 'X', managedBy }; },
   setName: (name) => { calls.push(`setName:${String(name)}`); return { name: name ?? 'default' }; },
   chooseIcon: () => { calls.push('chooseIcon'); return { name: 'X' }; },
   resetIcon: () => { calls.push('resetIcon'); return { name: 'X' }; },
@@ -143,6 +144,14 @@ await new Promise((resolve) => setImmediate(resolve));
 await new Promise((resolve) => setTimeout(resolve, 20));
 check('restart answers 202 before relaunching', restart.status === 202);
 check('restart reached the controller', calls.includes('restart'));
+
+calls.length = 0;
+managedBy = 'nix';
+const managedRestart = await post(BRANDING_PATHS.restart, {});
+await new Promise((resolve) => setTimeout(resolve, 20));
+check('a Nix-managed bundle refuses restart with 409', managedRestart.status === 409);
+check('a refused restart never reaches the controller', !calls.includes('restart'));
+managedBy = null;
 
 server.close();
 

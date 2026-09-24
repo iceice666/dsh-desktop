@@ -15,6 +15,7 @@ import { iconIdentity } from '../src/main/branding.js';
 import { findHarnessAnchor } from '../src/main/find-harness.js';
 import { installNodeShim, overlayYaml, shellQuote, shimScript } from '../src/main/node-shim.js';
 import {
+  bundleManager,
   bundledHarnessAnchor,
   isPackagedLayout,
   packagedAppBundle,
@@ -72,6 +73,8 @@ try {
     'harness: an incomplete bundled harness is still refused',
     throws(() => findHarnessAnchor({ root }), /missing or incomplete/u),
   );
+
+  check('managed: the checkout is never managed', bundleManager() === undefined);
 
   // ── DSH home ──────────────────────────────────────────────────────────────
   check(

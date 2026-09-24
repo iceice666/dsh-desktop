@@ -39,6 +39,7 @@ window.__ModuleLoader__.load({
       resetIcon: '恢复默认图标',
       iconHint: '支持 .png（建议 1024×1024 正方形）或 .icns。Dock 图标立即更新。',
       noIcon: '无图标',
+      managedNix: '此应用由 Nix 安装。选单栏、Cmd-Tab 与 Finder 显示的名称和图标由 Nix 配置（programs.dsh-desktop）决定；这里的更改只影响视窗标题、Dock 图标与「关于」面板。',
       restartTitle: '需要重新启动',
       restartBody: '当前菜单栏与 Cmd-Tab 仍显示「{launched}」。重新启动后才会完全套用新的名称与图标。',
       restart: '立即重新启动',
@@ -64,6 +65,7 @@ window.__ModuleLoader__.load({
       resetIcon: 'Reset to default icon',
       iconHint: 'Accepts .png (1024×1024 square recommended) or .icns. The Dock icon updates immediately.',
       noIcon: 'No icon',
+      managedNix: 'Installed by Nix. The name and icon shown in the menu bar, Cmd-Tab, and Finder come from your Nix configuration (programs.dsh-desktop); changes here only affect the window title, Dock icon, and About panel.',
       restartTitle: 'Restart required',
       restartBody: 'The menu bar and Cmd-Tab still show “{launched}”. Restart to fully apply the new name and icon.',
       restart: 'Restart now',
@@ -240,6 +242,9 @@ window.__ModuleLoader__.load({
         h('p', { className: 'hint' }, t('iconHint')),
         state.iconSource === 'env' ? h('p', { className: 'warn' }, t('envIcon')) : null);
 
+      const managedNotice = state.managedBy === 'nix'
+        ? h('p', { className: 'hint', role: 'note' }, t('managedNix'))
+        : null;
       const restartNotice = state.restartRequired
         ? h('div', { className: 'notice', role: 'status' },
           h('strong', null, t('restartTitle')),
@@ -264,6 +269,7 @@ window.__ModuleLoader__.load({
         h('p', { className: 'intro' }, t('intro')),
         nameField,
         iconField,
+        managedNotice,
         restartNotice,
         error !== undefined ? h('p', { className: 'error', role: 'alert' }, t('failed', { message: error })) : null);
     }

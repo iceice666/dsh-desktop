@@ -119,6 +119,10 @@ export function createBrandingRoutes(options) {
     {
       path: BRANDING_PATHS.restart,
       handler: route('POST', (_body, res) => {
+        const { managedBy } = controller.state();
+        if (managedBy !== null && managedBy !== undefined) {
+          throw new RequestError(409, 'this bundle is managed externally and cannot be restamped');
+        }
         // Answer first: the relaunch tears down this very server.
         sendJson(res, 202, { accepted: true });
         setImmediate(() => {
