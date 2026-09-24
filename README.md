@@ -242,7 +242,7 @@ DSH 的原生模組會比對執行環境的 V8 與 Node 版本，因此 Electron
 
 | 元件 | 版本 |
 |---|---|
-| DeepSeek Harness | 0.1.6-alpha.2（鎖定於 `runtime/pnpm-lock.yaml`） |
+| DeepSeek Harness | 0.1.7-rc.1（鎖定於 `runtime/pnpm-lock.yaml`） |
 | Electron | 43.0.0 |
 | Node.js（執行 `pnpm check` 等腳本） | 24.21.0 |
 
