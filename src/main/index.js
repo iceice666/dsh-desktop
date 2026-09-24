@@ -8,7 +8,7 @@
  * registers on the host's `webServer`, gated to this window's own traffic.
  */
 
-import { app, Menu } from 'electron';
+import { app, Menu, Notification } from 'electron';
 
 import { BrandingController } from './branding-controller.js';
 import { createBrandingRoutes } from './branding-routes.js';
@@ -18,6 +18,7 @@ import { findHarnessAnchor } from './find-harness.js';
 import { legacyDshHome, migrateLegacyHome } from './home-migration.js';
 import { importHarnessYaml, startHost, resolveOrigin, resolveAuthenticationUrl } from './host.js';
 import { installNodeShim } from './node-shim.js';
+import { installNotifications } from './notifications.js';
 import {
   bundleManager,
   ICON_SOURCE_KEY,
@@ -89,6 +90,8 @@ let host;
 let generation;
 /** Disposers for the branding routes on the live host. */
 let removeRoutes = [];
+/** Disposer for live host notification observers and native notifications. */
+let removeNotifications;
 /** Set once shutdown has begun, so `before-quit` runs its teardown once. */
 let quitting = false;
 
@@ -208,6 +211,14 @@ async function main() {
   const smoke = process.env.DSH_DESKTOP_SMOKE === '1';
 
   generation = new ShellGeneration({ log });
+  removeNotifications = installNotifications({
+    ctx: host.ctx,
+    Notification,
+    getShell: () => generation,
+    appName: effective.name,
+    locale: app.getLocale(),
+    log,
+  });
   await generation.mount({
     origin,
     authenticationUrl,
@@ -273,6 +284,8 @@ async function verifyNodeRuntime() {
  * half-disposed Cordis tree.
  */
 async function teardown() {
+  removeNotifications?.();
+  removeNotifications = undefined;
   const shell = generation;
   generation = undefined;
   if (shell !== undefined) {

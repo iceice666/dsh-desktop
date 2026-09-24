@@ -476,6 +476,12 @@ export class ShellGeneration {
     return this.#released ? undefined : this.#accessHeader;
   }
 
+  /** Foreground windows already show the request; avoid duplicate OS alerts. */
+  get focused() {
+    return this.alive && this.#window.isVisible()
+      && !this.#window.isMinimized() && this.#window.isFocused();
+  }
+
   /** Whether the window is still usable. */
   get alive() {
     return this.#window !== undefined && !this.#window.isDestroyed();
