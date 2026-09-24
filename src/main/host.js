@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 
 import { PROJECT_ROOT } from './branding.js';
+import { DESKTOP_PROFILE_NAME, resolveDesktopProfile } from './desktop-profile.js';
 
 const require = createRequire(import.meta.url);
 
@@ -20,11 +21,7 @@ const require = createRequire(import.meta.url);
 export const DESKTOP_PATCH_FILE = join(PROJECT_ROOT, 'plugins', 'cordis.patch.yml');
 
 /**
- * Resolve a DSH package from the installed harness.
- *
- * The desktop app deliberately does not vendor its own harness copy: it drives
- * the same installation the `dsh` CLI uses, so profiles, credentials, and
- * installed plugins are shared.
+ * Resolve a DSH package from the harness installation in use.
  *
  * Under pnpm the top-level anchor exposes only `@deepseek-ai/dsh` itself; its
  * dependencies live in the content-addressed store and are reachable only from
@@ -46,11 +43,15 @@ async function importHarness(specifier, paths) {
  * @param anchor - node_modules directory exposing `@deepseek-ai/dsh`.
  * @returns the anchor, followed by the directory `dsh` itself occupies.
  */
-function harnessResolutionPaths(anchor) {
+export function harnessResolutionPaths(anchor) {
   const paths = [anchor];
   try {
     const entry = require.resolve('@deepseek-ai/dsh/lib/profile-boot.js', { paths: [anchor] });
     paths.push(dirname(entry));
+    // `yaml` is a dependency of the settings store, not of `dsh` itself, so
+    // under pnpm it resolves only from there.
+    const settings = require.resolve('@deepseek-ai/dsh-settings-file', { paths: [dirname(entry)] });
+    paths.push(dirname(settings));
   } catch {
     // Leave the anchor alone; the caller's own resolution reports the failure.
   }
@@ -58,17 +59,42 @@ function harnessResolutionPaths(anchor) {
 }
 
 /**
+ * Load the harness's YAML library, for the legacy-home migration.
+ * @param anchor - node_modules directory exposing `@deepseek-ai/dsh`.
+ * @returns the `yaml` module namespace.
+ */
+export async function importHarnessYaml(anchor) {
+  return importHarness('yaml', harnessResolutionPaths(anchor));
+}
+
+/**
  * Start the profile tree and return the live root Context.
  *
- * @param options - `{ profile, anchor, port, log }`.
+ * The `desktop` profile is application-owned: it is created and loaded here
+ * from `home` and booted as a resolved profile, so the CLI's shared module
+ * index is never written (see desktop-profile.js). Any other name boots a CLI
+ * profile exactly as `dsh --profile <name>` would.
+ *
+ * @param options - `{ profile, home, anchor, port, log, extraPatchFiles }`.
  * @returns `{ ctx, shutdown, dispose }` for the live generation.
  */
 export async function startHost(options) {
-  const { profile, anchor, port, log, extraPatchFiles = [] } = options;
+  const { profile, home, anchor, port, log, extraPatchFiles = [] } = options;
 
   const paths = harnessResolutionPaths(anchor);
   const { runProfile } = await importHarness('@deepseek-ai/dsh/lib/profile-boot.js', paths);
-  const { loadLayeredEnv } = await importHarness('@deepseek-ai/dsh-app-boot', paths);
+  const appBoot = await importHarness('@deepseek-ai/dsh-app-boot', paths);
+  const { loadLayeredEnv } = appBoot;
+
+  const resolvedProfile =
+    profile === DESKTOP_PROFILE_NAME
+      ? resolveDesktopProfile({
+          appBoot,
+          home,
+          installAnchor: require.resolve('@deepseek-ai/dsh/package.json', { paths }),
+        })
+      : undefined;
+  if (resolvedProfile !== undefined) log(`profile directory ${resolvedProfile.profile.dir}`);
 
   // The launch-environment snapshot is a layered object with `get`/`getFrom`,
   // not a plain record: `http-proxy` and other rows call `env.get(name)` during
@@ -85,6 +111,7 @@ export async function startHost(options) {
   // the user already has running.
   const started = await runProfile({
     profile,
+    resolvedProfile,
     args: ['--no-open', '--port', String(port ?? 0)],
     // Desktop-only rows (the branding Settings page) arrive as an overlay, so
     // the user's profile on disk is never edited.

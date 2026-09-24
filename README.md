@@ -80,12 +80,12 @@ App 會由 home-manager 的 `targets.darwin.copyApps`（`stateVersion` ≥ 25.11
 | `icon` | 應用程式圖標，`.png` 或 `.icns` |
 | `bundleId` | Bundle identifier，預設 `dev.dsh-desktop` |
 | `package` | 自訂套件；設定後 `name`、`icon`、`bundleId` 不再生效 |
-| `dshHome` | 唯讀，應用程式的 DSH home 路徑 |
+| `dshHome` | 唯讀，應用程式使用的 DSH home 路徑（即 `~/.dsh`） |
 
-`dshHome` 可用來佈署設定檔，例如以 sops-nix 產生應用程式專用的 `.env`：
+`dshHome` 可用來佈署設定檔，例如以 sops-nix 產生桌面應用與 `dsh` 共用的 `.env`：
 
 ```nix
-sops.templates."dsh-desktop-env".path =
+sops.templates."dsh-env".path =
   "${config.programs.dsh-desktop.dshHome}/.env";
 ```
 
@@ -146,13 +146,24 @@ sops.templates."dsh-desktop-env".path =
 | 內容 | 路徑 |
 |---|---|
 | 應用程式資料 | `~/Library/Application Support/dsh-desktop/` |
-| DSH home（profile、憑證、會話、`.env`） | `~/Library/Application Support/dsh-desktop/dsh-home/` |
+| DSH home（設定、憑證、會話、`.env`） | `~/.dsh/`，與命令列版 `dsh` 共用 |
+| 桌面應用的 profile（插件、profile patch） | `~/.dsh/profiles/desktop/` |
 | 外觀設定 | `~/Library/Application Support/dsh-desktop/branding.json` |
 | 重新啟動記錄 | `~/Library/Application Support/dsh-desktop/relaunch.log` |
 
-桌面應用使用**獨立的 DSH home**，與命令列版 `dsh` 的 `~/.dsh` 分開，兩者的 profile、
-憑證與會話互不影響。若要讓桌面應用使用相同的 API key，請把對應設定放進上表的
-DSH home（例如複製 `.env`）。
+與上游 DSH Desktop 相同，桌面應用與命令列版 `dsh` **共用 `~/.dsh`**：設定、API key、
+`.env`、會話與工作區兩邊都看得到。桌面應用啟動自己的 **`desktop` profile**
+（`dsh` 命令列會拒絕使用這個名稱），因此插件與 profile patch 仍與 `dsh web` 分開。
+`~/.dsh/cordis.patch.yml` 這一層則同時套用到兩者。
+
+同一個會話同一時間只能由一個程式開啟；若已在 `dsh web` 中開啟，桌面應用會提示
+該會話正在使用中。
+
+**從舊版升級**：舊版把資料放在 `~/Library/Application Support/dsh-desktop/dsh-home/`。
+第一次啟動新版時會自動搬移一次：`profiles/web` 成為 `profiles/desktop`，會話、工作區、
+observational memory 與設定合併進 `~/.dsh`（已存在的內容一律保留，`settings.yaml`
+衝突時以 `~/.dsh` 為準並留下備份）。舊目錄不會被刪除，只會留下 `.migrated-to` 標記；
+確認一切正常後可以自行刪除。
 
 ---
 
@@ -162,8 +173,8 @@ DSH home（例如複製 `.env`）。
 
 | 環境變數 | 說明 |
 |---|---|
-| `DSH_DESKTOP_DSH_HOME` | 覆寫 DSH home 位置 |
-| `DSH_DESKTOP_PROFILE` | DSH profile 名稱，預設 `web` |
+| `DSH_DESKTOP_DSH_HOME` | 覆寫 DSH home 位置（此時不會自動搬移舊資料） |
+| `DSH_DESKTOP_PROFILE` | DSH profile 名稱，預設 `desktop`；其他名稱會以 `dsh --profile` 的方式載入 |
 | `DSH_DESKTOP_PORT` | 本機服務的 port，預設由系統指派 |
 | `DSH_DESKTOP_USER_DATA` | 覆寫應用程式資料目錄 |
 | `DSH_DESKTOP_APP_NAME` | 本次啟動使用的應用程式名稱 |
@@ -200,8 +211,8 @@ pnpm smoke          # 啟動真實視窗，確認介面掛載與快捷鍵運作�
 pnpm package:smoke  # 打包並以全新的資料目錄驗證打包版
 ```
 
-開發版會使用 `PATH` 上的 `dsh`，沿用其 profile、憑證與 `~/.dsh`；
-`DSH_ANCHOR` 可以指定另一份 harness 安裝。
+開發版會使用 `PATH` 上的 `dsh`，並與安裝版一樣使用 `~/.dsh` 中的 `desktop` profile
+（開發版會遵循 `DSH_HOME`）；`DSH_ANCHOR` 可以指定另一份 harness 安裝。
 
 若在會阻擋 Chromium sandbox 與網路服務的受限環境中執行 smoke 測試，可以用
 `DSH_DESKTOP_ELECTRON_FLAGS` 傳入額外的 Electron 旗標：

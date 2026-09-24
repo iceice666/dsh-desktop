@@ -50,13 +50,14 @@ in
 
     dshHome = lib.mkOption {
       type = lib.types.str;
-      default = "${config.home.homeDirectory}/Library/Application Support/dsh-desktop/dsh-home";
-      defaultText = lib.literalExpression ''"''${config.home.homeDirectory}/Library/Application Support/dsh-desktop/dsh-home"'';
+      default = "${config.home.homeDirectory}/.dsh";
+      defaultText = lib.literalExpression ''"''${config.home.homeDirectory}/.dsh"'';
       readOnly = true;
       description = ''
-        The app's own DSH home (profiles, credentials, sessions, and the
-        home-layer `.env`). Separate from the CLI's `~/.dsh`; see the README.
-        Use it to place files there, e.g. a sops template at
+        The DSH home the app uses (settings, credentials, sessions, and the
+        home-layer `.env`). It is the CLI's `~/.dsh`, shared as upstream DSH
+        Desktop does; the app boots its own `desktop` profile inside it. Use
+        it to place files there, e.g. a sops template at
         `"''${config.programs.dsh-desktop.dshHome}/.env"`.
       '';
     };

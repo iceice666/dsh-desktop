@@ -1,6 +1,6 @@
 /**
  * Pure-logic checks for the packaged app: layout detection, harness choice,
- * DSH home isolation, the Node shim, login-shell capture parsing, and the icon
+ * the Node shim, login-shell capture parsing, and the icon
  * identity that decides whether a relaunch is needed. No window, no bundle.
  *
  * Usage: node scripts/test-packaging.mjs
@@ -19,7 +19,6 @@ import {
   bundledHarnessAnchor,
   isPackagedLayout,
   packagedAppBundle,
-  packagedDshHome,
 } from '../src/main/packaged.js';
 import { parseCapture, selectUpdates } from '../src/main/shell-environment.js';
 
@@ -75,20 +74,6 @@ try {
   );
 
   check('managed: the checkout is never managed', bundleManager() === undefined);
-
-  // ── DSH home ──────────────────────────────────────────────────────────────
-  check(
-    'home: defaults inside userData',
-    packagedDshHome({ DSH_DESKTOP_USER_DATA: '/u' }) === join('/u', 'dsh-home'),
-  );
-  check(
-    'home: an inherited DSH_HOME is ignored',
-    packagedDshHome({ DSH_DESKTOP_USER_DATA: '/u', DSH_HOME: '/cli' }) === join('/u', 'dsh-home'),
-  );
-  check(
-    'home: DSH_DESKTOP_DSH_HOME overrides',
-    packagedDshHome({ DSH_DESKTOP_USER_DATA: '/u', DSH_DESKTOP_DSH_HOME: '/x' }) === '/x',
-  );
 
   // ── node shim ─────────────────────────────────────────────────────────────
   check('shim: quoting survives a single quote', shellQuote("a'b") === `'a'\\''b'`);

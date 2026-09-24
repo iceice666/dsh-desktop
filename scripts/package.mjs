@@ -302,6 +302,8 @@ if (smoke) {
       DSH_DESKTOP_SMOKE: '1',
       DSH_DESKTOP_VERBOSE: '1',
       DSH_DESKTOP_USER_DATA: join(scratch, 'user-data'),
+      // The app otherwise shares the real ~/.dsh with the CLI.
+      DSH_DESKTOP_DSH_HOME: join(scratch, 'dsh-home'),
       ...(extraFlags.length > 0 ? { DSH_DESKTOP_ELECTRON_FLAGS: extraFlags.join(' ') } : {}),
     },
     timeout: 180_000,

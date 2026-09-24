@@ -13,15 +13,16 @@ import { app, Menu } from 'electron';
 import { BrandingController } from './branding-controller.js';
 import { createBrandingRoutes } from './branding-routes.js';
 import { iconIdentity, resolveBranding, userDataDirectory } from './branding.js';
+import { DESKTOP_PROFILE_NAME, resolveDesktopDshHome } from './desktop-profile.js';
 import { findHarnessAnchor } from './find-harness.js';
-import { startHost, resolveOrigin, resolveAuthenticationUrl } from './host.js';
+import { legacyDshHome, migrateLegacyHome } from './home-migration.js';
+import { importHarnessYaml, startHost, resolveOrigin, resolveAuthenticationUrl } from './host.js';
 import { installNodeShim } from './node-shim.js';
 import {
   bundleManager,
   ICON_SOURCE_KEY,
   isPackagedLayout,
   packagedAppBundle,
-  packagedDshHome,
   readBundleKey,
 } from './packaged.js';
 import { scheduleRelaunch } from './relaunch.js';
@@ -53,12 +54,12 @@ app.setPath('userData', userDataDirectory());
  */
 const packaged = isPackagedLayout();
 
-if (packaged) {
-  // The packaged app ships its own harness; sharing the CLI's `~/.dsh` would
-  // make the two installations keep rewriting each other's module links under
-  // `profiles/node_modules`. See `packagedDshHome`.
-  process.env.DSH_HOME = packagedDshHome();
-}
+/**
+ * DSH home shared with the CLI; see desktop-profile.js. Exported through
+ * `DSH_HOME` because every harness package resolves the home from there.
+ */
+const dshHome = resolveDesktopDshHome({ packaged });
+process.env.DSH_HOME = dshHome.path;
 
 /** Identity in effect now; the About panel and window title follow it. */
 const effective = resolveBranding();
@@ -164,11 +165,23 @@ async function main() {
     // `process.cwd()` as the profile's working directory.
     log(await adoptLoginShellEnvironment({ home: app.getPath('home') }));
     process.chdir(app.getPath('home'));
-    log(`DSH_HOME=${String(process.env.DSH_HOME)}`);
   }
+  log(`DSH_HOME=${dshHome.path} (${dshHome.source})`);
 
   const { anchor, source } = findHarnessAnchor();
   log(`using DSH from ${source}`);
+
+  // Earlier builds kept a private home inside userData; fold it into the
+  // shared one once. Only when the default home is in use: an explicit home
+  // is the caller's to manage.
+  if (dshHome.source === 'default') {
+    migrateLegacyHome({
+      legacy: legacyDshHome(app.getPath('userData')),
+      home: dshHome.path,
+      yaml: await importHarnessYaml(anchor),
+      log,
+    });
+  }
 
   // DSH runs Node PTC programs with `process.execPath`, which here is the
   // Electron app. The shim makes that child a Node process; see node-shim.js.
@@ -178,7 +191,8 @@ async function main() {
   });
 
   host = await startHost({
-    profile: process.env.DSH_DESKTOP_PROFILE ?? 'web',
+    profile: process.env.DSH_DESKTOP_PROFILE || DESKTOP_PROFILE_NAME,
+    home: dshHome.path,
     anchor,
     port: Number(process.env.DSH_DESKTOP_PORT ?? 0),
     log,

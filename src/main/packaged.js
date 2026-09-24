@@ -19,7 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
-import { PROJECT_ROOT, userDataDirectory } from './branding.js';
+import { PROJECT_ROOT } from './branding.js';
 
 /** Info.plist key recording which icon the bundle was stamped with. */
 export const ICON_SOURCE_KEY = 'DSHDesktopIconSource';
@@ -62,25 +62,6 @@ export function packagedAppBundle(root = PROJECT_ROOT) {
 export function bundledHarnessAnchor(root = PROJECT_ROOT) {
   const anchor = join(root, 'runtime', 'node_modules');
   return existsSync(join(anchor, '@deepseek-ai', 'dsh', 'package.json')) ? anchor : undefined;
-}
-
-/**
- * DSH home used by the packaged app.
- *
- * The packaged app ships its own harness, and DSH maintains
- * `$DSH_HOME/profiles/node_modules` as links into whichever installation last
- * launched. Sharing `~/.dsh` with the `dsh` CLI would make the two keep
- * rewriting those links under each other, so the app gets a home of its own.
- * `DSH_DESKTOP_DSH_HOME` overrides it; an inherited `DSH_HOME` does not, since
- * a terminal launch would otherwise silently share the CLI's home.
- *
- * @param env - environment to read the override from.
- * @returns absolute DSH home path.
- */
-export function packagedDshHome(env = process.env) {
-  const override = env.DSH_DESKTOP_DSH_HOME;
-  if (override !== undefined && override.length > 0) return override;
-  return join(userDataDirectory(env), 'dsh-home');
 }
 
 /**

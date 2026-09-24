@@ -80,6 +80,10 @@ if (!step('unit: packaged layout, node shim, shell environment', ['scripts/test-
   failures.push('unit:packaging');
 }
 
+if (!step('unit: shared DSH home, desktop profile, legacy-home migration', ['scripts/test-desktop-profile.mjs'])) {
+  failures.push('unit:desktop-profile');
+}
+
 if (!step('admission: live host contract', ['scripts/test-admission.mjs'])) {
   failures.push('admission');
 }
