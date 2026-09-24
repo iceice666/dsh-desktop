@@ -25,3 +25,7 @@ node_modules/
 # Packaging: staged harness install and the resulting .app (scripts/package.mjs).
 .build/
 dist/
+
+# nix build output link.
+result
+result-*

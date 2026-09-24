@@ -16,9 +16,22 @@
  * → sign ad hoc → verify. `--smoke` then launches the packaged app once with a
  * throwaway userData and DSH home and waits for the client to mount.
  *
- * Usage: node scripts/package.mjs [--smoke] [--skip-install]
- *   --skip-install   reuse .build/runtime from the previous run
- *   --smoke          launch the result and verify the client mounts
+ * Usage: node scripts/package.mjs [options]
+ *   --skip-install             reuse .build/runtime from the previous run
+ *   --smoke                    launch the result and verify the client mounts
+ *
+ * Options used by the Nix build (nix/package.nix), which supplies every input
+ * itself and has no network or pnpm store:
+ *   --electron-app <path>      stock Electron.app to start from, instead of
+ *                              node_modules/electron
+ *   --runtime-modules <path>   an already installed hoisted harness
+ *                              node_modules, instead of installing runtime/
+ *   --out <dir>                output directory, instead of dist/
+ *   --managed-by <owner>       record who owns the bundle; the app then never
+ *                              restamps or renames itself (see packaged.js)
+ *
+ * Name and icon come from package.json and assets/, or DSH_DESKTOP_APP_NAME /
+ * DSH_DESKTOP_ICON / DSH_DESKTOP_BUNDLE_ID when set.
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -34,22 +47,34 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { parseArgs } from 'node:util';
 
 import { resolveBranding, PROJECT_ROOT } from '../src/main/branding.js';
 import { stampBundle, stockElectronExecutable } from '../src/main/branded-bundle.js';
+import { MANAGED_BY_KEY, readBundleKey } from '../src/main/packaged.js';
 import { signAdHoc } from '../src/main/relaunch.js';
 
-const args = new Set(process.argv.slice(2));
-const smoke = args.has('--smoke');
-const skipInstall = args.has('--skip-install');
+const { values: options } = parseArgs({
+  options: {
+    smoke: { type: 'boolean', default: false },
+    'skip-install': { type: 'boolean', default: false },
+    'electron-app': { type: 'string' },
+    'runtime-modules': { type: 'string' },
+    out: { type: 'string' },
+    'managed-by': { type: 'string' },
+  },
+  strict: true,
+});
+const smoke = options.smoke;
+const skipInstall = options['skip-install'];
 
 /** Electron build the bundled harness's native module accepts; see README. */
 const REQUIRED_ELECTRON = '43.0.0';
 
 const BUILD_DIRECTORY = join(PROJECT_ROOT, '.build');
 const STAGED_RUNTIME = join(BUILD_DIRECTORY, 'runtime');
-const OUTPUT_DIRECTORY = join(PROJECT_ROOT, 'dist');
+const OUTPUT_DIRECTORY = options.out === undefined ? join(PROJECT_ROOT, 'dist') : resolve(options.out);
 
 /** What of this project goes into Resources/app. Everything else stays behind. */
 const APP_CONTENT = ['src', 'plugins', 'assets'];
@@ -81,13 +106,19 @@ if (process.platform !== 'darwin' || process.arch !== 'arm64') {
 }
 
 const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8'));
-const stock = stockElectronExecutable();
-const stockApp = dirname(dirname(dirname(stock)));
-const electronVersion = JSON.parse(
-  readFileSync(createRequire(import.meta.url).resolve('electron/package.json'), 'utf8'),
-).version;
+let stockApp;
+let electronVersion;
+if (options['electron-app'] === undefined) {
+  stockApp = dirname(dirname(dirname(stockElectronExecutable())));
+  electronVersion = JSON.parse(
+    readFileSync(createRequire(import.meta.url).resolve('electron/package.json'), 'utf8'),
+  ).version;
+} else {
+  stockApp = resolve(options['electron-app']);
+  electronVersion = readBundleKey(stockApp, 'CFBundleVersion');
+}
 if (electronVersion !== REQUIRED_ELECTRON) {
-  throw new Error(`package: node_modules has Electron ${electronVersion}; the harness needs exactly ${REQUIRED_ELECTRON}`);
+  throw new Error(`package: ${stockApp} is Electron ${String(electronVersion)}; the harness needs exactly ${REQUIRED_ELECTRON}`);
 }
 
 // Packaging must be reproducible: identity comes from package.json and
@@ -100,7 +131,11 @@ const appRoot = join(resources, 'app');
 
 // ── 1. harness ───────────────────────────────────────────────────────────────
 
-if (skipInstall && existsSync(join(STAGED_RUNTIME, 'node_modules', '@deepseek-ai', 'dsh'))) {
+let stagedModules = join(STAGED_RUNTIME, 'node_modules');
+if (options['runtime-modules'] !== undefined) {
+  stagedModules = resolve(options['runtime-modules']);
+  step(`harness: using ${stagedModules}`);
+} else if (skipInstall && existsSync(join(stagedModules, '@deepseek-ai', 'dsh'))) {
   step('harness: reusing .build/runtime');
 } else {
   step('harness: installing runtime/ (hoisted, production, frozen lockfile)');
@@ -116,7 +151,6 @@ if (skipInstall && existsSync(join(STAGED_RUNTIME, 'node_modules', '@deepseek-ai
   });
 }
 
-const stagedModules = join(STAGED_RUNTIME, 'node_modules');
 const dshVersion = JSON.parse(
   readFileSync(join(stagedModules, '@deepseek-ai', 'dsh', 'package.json'), 'utf8'),
 ).version;
@@ -143,24 +177,35 @@ writeFileSync(
   `${JSON.stringify(
     {
       name: manifest.name,
-      productName: manifest.productName,
+      // The resolved name, so an override (DSH_DESKTOP_APP_NAME, or the Nix
+      // module's `name`) becomes this bundle's default at runtime too.
+      productName: branding.name,
       version,
       private: true,
       type: manifest.type,
       main: manifest.main,
-      dshDesktop: manifest.dshDesktop,
+      dshDesktop: { ...manifest.dshDesktop, bundleId: branding.bundleId },
     },
     null,
     2,
   )}\n`,
 );
 
+// Likewise an overriding icon replaces the shipped default inside the bundle.
+if (branding.sources.icon === 'env') {
+  for (const file of ['icon.png', 'icon.icns']) rmSync(join(appRoot, 'assets', file), { force: true });
+  const icon = branding.iconIcns ?? branding.iconPng;
+  cpSync(icon, join(appRoot, 'assets', branding.iconIcns === undefined ? 'icon.png' : 'icon.icns'));
+}
+
 step('bundle: copying harness');
 // Hidden pnpm bookkeeping (.pnpm, .modules.yaml) and .bin shims are useless
 // inside the bundle; the .bin entries are symlinks to relative paths anyway.
 const runtimeModules = join(appRoot, 'runtime', 'node_modules');
 mkdirSync(dirname(runtimeModules), { recursive: true });
-run('ditto', [stagedModules, runtimeModules]);
+// --noextattr --noacl: the source may be a read-only Nix build tree.
+run('ditto', ['--noextattr', '--noacl', stagedModules, runtimeModules]);
+run('chmod', ['-R', 'u+w', runtimeModules]);
 for (const junk of ['.bin', '.pnpm', '.modules.yaml', '.pnpm-workspace-state-v1.json']) {
   rmSync(join(runtimeModules, junk), { recursive: true, force: true });
 }
@@ -185,10 +230,22 @@ if (escaping.length > 0) {
 step(`identity: ${branding.name} (${branding.bundleId}) ${version}`);
 // Stamp against the bundle's own copy of assets/, so the recorded icon
 // identity is the bundled default rather than a path on this machine.
-stampBundle(app, resolveBranding({ root: appRoot, preferences: {} }), { version });
+// The overrides are now the bundle's defaults, so resolve without them.
+const bundleEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !['DSH_DESKTOP_APP_NAME', 'DSH_DESKTOP_ICON', 'DSH_DESKTOP_BUNDLE_ID'].includes(key)),
+);
+stampBundle(app, resolveBranding({ root: appRoot, preferences: {}, env: bundleEnv }), {
+  version,
+  // A Nix build has no LaunchServices to talk to, and the copy in the store is
+  // not where the user will open it from.
+  register: options['managed-by'] === undefined,
+});
 const plist = join(app, 'Contents', 'Info.plist');
 execFileSync('plutil', ['-replace', 'LSApplicationCategoryType', '-string', 'public.app-category.developer-tools', plist]);
 execFileSync('plutil', ['-replace', 'DSHDesktopHarnessVersion', '-string', dshVersion, plist]);
+if (options['managed-by'] !== undefined) {
+  execFileSync('plutil', ['-replace', MANAGED_BY_KEY, '-string', options['managed-by'], plist]);
+}
 
 // ── 4. signature ─────────────────────────────────────────────────────────────
 

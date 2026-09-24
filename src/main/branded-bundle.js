@@ -114,7 +114,8 @@ export function ensureBrandedBundle(options = {}) {
  *
  * @param app - `.app` directory to modify in place.
  * @param branding - resolved branding.
- * @param options - `{ version }`: optional marketing version to record.
+ * @param options - `{ version, register }`: optional marketing version to
+ *   record; `register: false` skips LaunchServices (builds in a sandbox).
  */
 export function stampBundle(app, branding, options = {}) {
   const plist = join(app, 'Contents', 'Info.plist');
@@ -137,7 +138,7 @@ export function stampBundle(app, branding, options = {}) {
   // the saved choice still needs a relaunch (branding-controller.js).
   setPlist(plist, ICON_SOURCE_KEY, iconIdentity(branding));
 
-  registerWithLaunchServices(app);
+  if (options.register !== false) registerWithLaunchServices(app);
 }
 
 /**
