@@ -189,6 +189,58 @@ pnpm install:app      # 複製到 ~/Applications（--system 則是 /Applications
 - 打包永遠使用預設名稱與圖標（`package.json` + `assets/`，或環境變數），不讀
   本機「應用外觀」的設定，所以結果可重現。
 
+### Nix（nix-darwin／home-manager）
+
+repo 本身是 flake，提供 `packages.aarch64-darwin.default` 與
+`homeManagerModules.default`：
+
+```nix
+# flake.nix
+inputs.dsh-desktop = {
+  url = "git+file:///Users/you/code/dsh-desktop";   # 或遠端 git URL
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+
+# home-manager 模組
+{ config, inputs, ... }: {
+  imports = [ inputs.dsh-desktop.homeManagerModules.default ];
+  programs.dsh-desktop = {
+    enable = true;
+    name = "dsh";             # 選用，預設 DeepSeek Harness
+    icon = ./harness.png;     # 選用，.png（1024×1024）或 .icns
+  };
+}
+```
+
+app 放進 `home.packages`，由 home-manager 的 `targets.darwin.copyApps`
+（`stateVersion` ≥ 25.11 的預設）複製到 `~/Applications/Home Manager Apps/`，
+Spotlight 與 Launchpad 找得到；另有 `bin/dsh-desktop` 啟動器。也可以直接
+`nix build .#default` 或 `nix run .#default`。
+
+建置跑的是同一支 [package.mjs](scripts/package.mjs)，差別在輸入由 Nix 提供：
+
+- **Electron**：直接抓官方 `electron-v43.0.0-darwin-arm64.zip`（nixpkgs 沒有 43.x，
+  而且非得是這個版本不可）。
+- **Harness**：`runtime/pnpm-lock.yaml` 經 `fetchPnpmDeps` 離線安裝；
+  **改了 lockfile 就要更新 [nix/package.nix](nix/package.nix) 的 `pnpmDeps.hash`**
+  （設成空字串建置一次，照錯誤訊息的 `got:` 填回）。
+- **簽章**：用系統的 `/usr/bin/codesign` 重新封存 bundle（Nix 的 sigtool
+  做不到 bundle 的 resource seal）。因此建置不是 pure 的：nix-darwin 預設
+  `sandbox = false` 沒有問題；開了 sandbox 時靠 `__impureHostDeps` 放行。
+
+**名稱與圖標由 Nix 決定**。它們在建置時寫進 bundle，bundle 也標記為
+`DSHDesktopManagedBy = nix`，app 因此不會改寫或改名自己（store 裡是唯讀的，
+而 `~/Applications` 那份在下次 switch 時會被覆蓋）。設定頁仍可改視窗標題、
+Dock 圖標與 About 面板，但選單列、Cmd-Tab 與 Finder 只跟 Nix 設定走，頁面上
+會說明這點，也不會出現「立即重新啟動」。
+
+`programs.dsh-desktop.dshHome`（唯讀）是 app 自己的 DSH home，可以用來放檔案，
+例如把 CLI 用的 `~/.dsh/.env` 另外 render 一份給 app：
+
+```nix
+sops.templates."dsh-desktop-env".path = "${config.programs.dsh-desktop.dshHome}/.env";
+```
+
 ### 打包版與開發版的差異
 
 | | `pnpm start` | 打包版 |
