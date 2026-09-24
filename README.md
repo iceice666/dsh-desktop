@@ -1,461 +1,268 @@
-# dsh-desktop
+# DeepSeek Harness for macOS
 
-DeepSeek Harness 的 macOS 桌面客戶端：一個薄的 Electron 殼，在 main process 內
-啟動 DSH 的 Cordis host tree，並以 loopback 同源方式載入上游原本的 Web 客戶端。
+DeepSeek Harness 的原生 macOS 桌面應用。它把完整的 DSH 執行環境封裝進一個
+`.app`，提供與 Web 版一致的介面，並加上 macOS 原生的視窗、選單與快捷鍵體驗。
 
-架構依循 [`anywhere-labs/dsh-desktop`](https://github.com/anywhere-labs/dsh-desktop)
-驗證過的作法（見 [FINDINGS.md](FINDINGS.md) 的對照研讀）。
-
----
-
-## 設計要點
-
-### 不另造 IPC carrier
-
-桌面**不**攔截 `__DSH_TRANSPORT__`、**不**暴露任何 Electron API 給頁面。
-Host 照常綁 loopback，client 用上游原生的 HTTP + WebSocket carrier。
-
-因此 renderer 能維持 Chromium 最嚴格的設定：
-
-```js
-webPreferences: {
-  contextIsolation: true,
-  nodeIntegration: false,
-  sandbox: true,
-  webSecurity: true,
-  partition: 'persist:dsh-desktop-renderer',
-  preload: 'src/preload/platform-mark.cjs',
-}
-```
-
-唯一的 preload 只在 `<html>` 上設 `data-platform="darwin"`，不橋接任何東西
-（沒有 `contextBridge`、沒有 IPC），並且同樣跑在 sandbox 裡。
-
-### macOS 標題列
-
-`titleBarStyle: 'hiddenInset'` 拿掉了原生標題列，視窗只能透過頁面宣告的
-`-webkit-app-region: drag` 區域拖動。
-
-- **上游佈局開關**：上游 client 已內建 macOS 版面（header 拖曳區、控制項的
-  no-drag 例外、紅綠燈留白），但只在 `<html data-platform="darwin">` 時啟用，
-  並預期由 Electron preload 設定。[platform-mark.cjs](src/preload/platform-mark.cjs)
-  就只做這件事。
-- **全寬拖曳條**：上游只在側欄頂端與開啟中的對話標題列宣告拖曳區；首頁、設定頁
-  與側欄收合時頂端仍無法拖動。[titlebar.js](src/main/titlebar.js) 用
-  `insertCSS` 在視窗頂端補一條 38px 的 `drag` 條。按鈕、輸入框、連結等互動元素
-  以 `no-drag` 挖出，modal 開啟時整條停用。
-- **雙擊**：拖曳區上的雙擊由 Electron 原生處理，依照「系統設定 › 桌面與 Dock ›
-  連按兩下視窗標題列以…」的選擇縮放或縮到 Dock。
-- **半透明側欄**：視窗使用 `vibrancy: 'sidebar'` 並以全透明背景建立，讓原生
-  側欄材質透出來（與 Codex、Finder 相同）。上游在 `data-platform="darwin"` 下
-  已把 `html`、`body` 與版面 frame 設為透明、側欄欄位以 60% 不透明度繪製，
-  中央欄則保持實色底，所以只有左側邊欄呈現半透明。
-
-### 兩段式 session 認證
-
-Host 的 `authorizeIndex` 會擋下未認證的 `GET /`（401）。若直接
-`loadURL(authenticatedUrl(origin))`，token 會留在 renderer 的瀏覽歷史裡。
-
-因此分成兩步（[renderer-session.js](src/main/renderer-session.js)）：
-
-1. **`authenticateRendererSession`** — 在視窗自己的 session 內用
-   `session.fetch` 完成 token 交換。Host 回 303 + `Set-Cookie`，session 的
-   cookie jar 跟隨 redirect 後得到 200。此時尚未載入任何頁面。
-2. **`window.loadURL(origin)`** — 載入乾淨 URL，cookie 已可放行。
-
-### Generation 專屬能力 header
-
-Host 綁的是真實 TCP port，機器上任何程式都連得到。Cookie 只證明
-「完成過交換的瀏覽器」，不足以證明「本 generation 的 Electron renderer」。
-
-`installRendererAccessHeader` 以 `webRequest.onBeforeSendHeaders` 對每個
-同源請求注入 32-byte 能力 token。**主框架 query string 不夠用**：
-subresource、`/api` 呼叫、WebSocket upgrade 都不會帶上它。
-
-三重條件全部成立才注入，且進入時先剝除頁面自設的同名 header：
-
-- 請求屬於本 `webContents`（所有回報的 id 都須相符）
-- 目標是 carrier 的 HTTP origin 或其配對 WS origin
-- 發起 frame 與其 top frame 的 origin 都是 carrier
-
-### 視窗封閉性
-
-[navigation-policy.js](src/main/navigation-policy.js) 是純函數，因此可完整測試：
-
-- **只管主框架導覽**。子框架留給 client 自己的內嵌視圖。
-- **離開 origin 只阻擋、不外開**。`will-frame-navigate` 對 `about:blank`
-  這類內部目標也會觸發，把它們丟給瀏覽器是錯的。
-- **另外攔 `will-redirect`**。redirect 可以繞過 `will-frame-navigate` 離開 origin。
-- **popup 只放行 `https:` / `http:` / `mailto:`**。把任意 scheme 交給
-  `shell.openExternal` 等於讓頁面內容呼叫 OS 註冊的任何 handler。
-
-### Generation 生命週期
-
-[`ShellGeneration`](src/main/shell-generation.js) 單一物件擁有視窗、所有
-listener 與 header disposer，以冪等 `release()` 釋放。跨 generation 快取
-任何 reference 都會讓舊能力洩漏到新 generation 的流量上。
-
-應用層面另有三項 macOS 行為：
-
-- **單一實例鎖**。第二次啟動不會再開一棵 host tree——兩個 Cordis generation
-  會爭用同一個 session store；改為把既有視窗帶到前景。
-- **`activate`**。點 Dock 圖示時回到執行中的視窗。
-- **`before-quit` 攔截**。Cordis 的 dispose 是非同步的，必須等它釋放
-  subprocess 後才真正結束行程。
+- **開箱即用**：安裝版內建 DSH harness，不需要另外安裝 `dsh` 或設定 `PATH`。
+- **原生體驗**：隱藏式標題列、半透明側欄、原生選單列快捷鍵、單一實例、Dock 整合。
+- **安全預設**：頁面在 Chromium 最嚴格的 sandbox 中執行，不接觸任何 Electron API；
+  服務只綁定本機 loopback，並以每次啟動專屬的憑證保護。
+- **可自訂外觀**：在設定中修改應用程式名稱與圖標。
+- **Nix 支援**：提供 flake 套件與 home-manager 模組。
 
 ---
 
-## 執行
+## 系統需求
 
-### 前置：Electron 版本被鎖死
+| 項目 | 需求 |
+|---|---|
+| 作業系統 | macOS（Apple Silicon，arm64） |
+| 磁碟空間 | 約 850 MB |
+| 建置工具 | Node.js 24.21.0 與 pnpm（僅從原始碼建置時需要） |
 
-DSH 的原生模組 `node-addon-require-builtin` 內含寫死的 runtime fingerprint
-比對（V8 完整版本字串 + Node 版本）。實測：
+目前不支援 Intel 或 universal 版本。
 
-| Electron | V8 | Node | |
-|---|---|---|---|
-| 33.4.11 | 13.0.245.25 | 20.18.3 | ✗ |
-| 43.7.3 | 15.0.245.**31** | 24.21.0 | ✗ |
-| 43.1.0 | 15.0.245.13 ✓ | 24.**18**.0 | ✗ |
-| **43.0.0** | 15.0.245.13 ✓ | 24.17.0 ✓ | **✓** |
+---
 
-→ 目前對應 DSH `0.1.6-alpha.2` 的**唯一可用版本是 Electron 43.0.0**。
+## 安裝
 
-同一個原生模組也挑剔跑腳本的 Node：v24.18.0 會以
-`arm64 getter is not optional-bti-ldr-x0-this-imm-ret` 失敗。
-`pnpm start` 與 `pnpm smoke` 不受影響（用的是 Electron 內建的 Node），
-但 `pnpm check` 需要相容版本：
-
-```bash
-fnm use dsh-runtime   # 本機驗證過 v24.21.0
-```
+### 從原始碼建置
 
 ```bash
 pnpm install
+pnpm package        # 產生 dist/DeepSeek Harness.app
+pnpm install:app    # 安裝到 ~/Applications（加上 --system 則安裝到 /Applications）
 ```
 
-### 啟動
+建議安裝在 `~/Applications`：應用程式在修改名稱時需要改寫自身的 bundle，
+安裝在需要管理員權限的位置時此功能會受限。
+
+本機建置的 app 可以直接開啟。若把 app 複製到其他電腦，第一次開啟時請在 Finder
+中按右鍵 →「打開」，或執行：
 
 ```bash
-pnpm start
+xattr -dr com.apple.quarantine "DeepSeek Harness.app"
 ```
 
-不需任何設定。app 會跟著 `PATH` 上的 `dsh` 找到你已安裝的 harness，
-driving 的是同一份 profile、憑證與已裝插件。
+### 使用 Nix（nix-darwin／home-manager）
 
-| 環境變數 | 用途 |
-|---|---|
-| `DSH_ANCHOR` | 選用。指定另一份 harness 的 node_modules anchor |
-| `DSH_DESKTOP_PROFILE` | profile 名稱，預設 `web` |
-| `DSH_DESKTOP_PORT` | loopback port，預設 `0`（OS 指派） |
-| `DSH_DESKTOP_VERBOSE` | `1` 開啟診斷輸出 |
-| `DSH_DESKTOP_USER_DATA` | 覆寫 Chromium userData 目錄 |
-| `DSH_DESKTOP_APP_NAME` | 覆寫應用程式名稱，預設取 `package.json` 的 `productName` |
-| `DSH_DESKTOP_ICON` | 覆寫圖標，`.png`（建議 1024×1024）或 `.icns` |
-| `DSH_DESKTOP_BUNDLE_ID` | 覆寫 bundle identifier，預設 `dev.dsh-desktop` |
-| `DSH_DESKTOP_DSH_HOME` | 僅打包版：覆寫 DSH home，預設 `<userData>/dsh-home` |
-
-## 打包與安裝
-
-```bash
-pnpm package          # → dist/<名稱>.app（arm64、ad-hoc 簽章）
-pnpm package:smoke    # 同上，再以拋棄式 userData 實際啟動一次並確認 client 掛載
-pnpm install:app      # 複製到 ~/Applications（--system 則是 /Applications）
-```
-
-打包版是**自帶 DSH** 的獨立 `.app`，不需要另外安裝 `dsh`，也不看 `PATH`：
-
-```
-<名稱>.app/Contents/
-  MacOS/Electron                       原封不動的 Electron 43.0.0
-  Resources/app/                       package.json、src/、plugins/、assets/
-  Resources/app/runtime/node_modules/  DSH harness（約 550 MB）
-```
-
-- **Harness 版本鎖在 [runtime/](runtime/)**。`runtime/pnpm-lock.yaml` 與本機驗證過的
-  全域安裝完全相同，打包時以 `--frozen-lockfile --prod` 重新安裝到 `.build/runtime/`。
-  升級 DSH 就是改這裡——但必須先確認新版的原生模組接受 Electron 43.0.0（見下方
-  版本鎖），打包腳本本身也會拿打包出來的 Electron 實際載入 harness 驗證。
-- **hoisted、非 asar**：pnpm 預設的 isolated 版面會 symlink 回 store，搬到別台機器或
-  移動 app 就斷；`nodeLinker: hoisted` 產生純目錄，打包腳本另外確認 bundle 內沒有
-  指向外部的絕對 symlink。DSH 會以實體路徑載入原生模組、執行 node-pty 的
-  `spawn-helper`、ripgrep 與 worker 腳本，所以不打包成 asar。
-- **不跑 install scripts**：darwin-arm64 的原生模組都有 prebuilt（與全域 `dsh`
-  安裝相同）；唯一需要補的 `spawn-helper` 執行權限由打包腳本設定。
-- **簽章**：只重簽外層 bundle（ad-hoc）。stock Electron 本身已 ad-hoc 簽過，
-  `Resources/` 底下的 harness 以 resource 形式封存。本機建置的 app 沒有 quarantine
-  屬性，可以直接開；傳到其他機器則需右鍵 → 打開，或
-  `xattr -dr com.apple.quarantine <名稱>.app`。
-- 打包永遠使用預設名稱與圖標（`package.json` + `assets/`，或環境變數），不讀
-  本機「應用外觀」的設定，所以結果可重現。
-
-### Nix（nix-darwin／home-manager）
-
-repo 本身是 flake，提供 `packages.aarch64-darwin.default` 與
-`homeManagerModules.default`：
+本 repo 是一個 flake，提供 `packages.aarch64-darwin.default` 與
+`homeManagerModules.default`。
 
 ```nix
 # flake.nix
 inputs.dsh-desktop = {
-  url = "git+file:///Users/you/code/dsh-desktop";   # 或遠端 git URL
+  url = "github:iceice666/dsh-desktop";
   inputs.nixpkgs.follows = "nixpkgs";
 };
 
-# home-manager 模組
+# home-manager 設定
 { config, inputs, ... }: {
   imports = [ inputs.dsh-desktop.homeManagerModules.default ];
+
   programs.dsh-desktop = {
     enable = true;
-    name = "dsh";             # 選用，預設 DeepSeek Harness
-    icon = ./harness.png;     # 選用，.png（1024×1024）或 .icns
+    name = "DeepSeek Harness";   # 選用，應用程式名稱
+    icon = ./harness.png;        # 選用，.png（建議 1024×1024）或 .icns
+    # bundleId = "dev.dsh-desktop";
   };
 }
 ```
 
-app 放進 `home.packages`，由 home-manager 的 `targets.darwin.copyApps`
-（`stateVersion` ≥ 25.11 的預設）複製到 `~/Applications/Home Manager Apps/`，
-Spotlight 與 Launchpad 找得到；另有 `bin/dsh-desktop` 啟動器。也可以直接
-`nix build .#default` 或 `nix run .#default`。
+App 會由 home-manager 的 `targets.darwin.copyApps`（`stateVersion` ≥ 25.11 的預設）
+複製到 `~/Applications/Home Manager Apps/`，可從 Spotlight 與 Launchpad 開啟；
+同時提供 `dsh-desktop` 命令列啟動器。也可以直接執行 `nix run .#default`。
 
-建置跑的是同一支 [package.mjs](scripts/package.mjs)，差別在輸入由 Nix 提供：
+| 選項 | 說明 |
+|---|---|
+| `enable` | 安裝應用程式 |
+| `name` | 選單列、Cmd-Tab 與 Finder 中顯示的名稱，預設 `DeepSeek Harness` |
+| `icon` | 應用程式圖標，`.png` 或 `.icns` |
+| `bundleId` | Bundle identifier，預設 `dev.dsh-desktop` |
+| `package` | 自訂套件；設定後 `name`、`icon`、`bundleId` 不再生效 |
+| `dshHome` | 唯讀，應用程式的 DSH home 路徑 |
 
-- **Electron**：直接抓官方 `electron-v43.0.0-darwin-arm64.zip`（nixpkgs 沒有 43.x，
-  而且非得是這個版本不可）。
-- **Harness**：`runtime/pnpm-lock.yaml` 經 `fetchPnpmDeps` 離線安裝；
-  **改了 lockfile 就要更新 [nix/package.nix](nix/package.nix) 的 `pnpmDeps.hash`**
-  （設成空字串建置一次，照錯誤訊息的 `got:` 填回）。
-- **簽章**：用系統的 `/usr/bin/codesign` 重新封存 bundle（Nix 的 sigtool
-  做不到 bundle 的 resource seal）。因此建置不是 pure 的：nix-darwin 預設
-  `sandbox = false` 沒有問題；開了 sandbox 時靠 `__impureHostDeps` 放行。
-
-**名稱與圖標由 Nix 決定**。它們在建置時寫進 bundle，bundle 也標記為
-`DSHDesktopManagedBy = nix`，app 因此不會改寫或改名自己（store 裡是唯讀的，
-而 `~/Applications` 那份在下次 switch 時會被覆蓋）。設定頁仍可改視窗標題、
-Dock 圖標與 About 面板，但選單列、Cmd-Tab 與 Finder 只跟 Nix 設定走，頁面上
-會說明這點，也不會出現「立即重新啟動」。
-
-`programs.dsh-desktop.dshHome`（唯讀）是 app 自己的 DSH home，可以用來放檔案，
-例如把 CLI 用的 `~/.dsh/.env` 另外 render 一份給 app：
+`dshHome` 可用來佈署設定檔，例如以 sops-nix 產生應用程式專用的 `.env`：
 
 ```nix
-sops.templates."dsh-desktop-env".path = "${config.programs.dsh-desktop.dshHome}/.env";
+sops.templates."dsh-desktop-env".path =
+  "${config.programs.dsh-desktop.dshHome}/.env";
 ```
 
-### 打包版與開發版的差異
+> 由 Nix 管理的 app，名稱與圖標以 Nix 設定為準。應用程式內的外觀設定仍可修改
+> 視窗標題、Dock 圖標與「關於」面板，但不會改寫 bundle 本身。
 
-| | `pnpm start` | 打包版 |
-|---|---|---|
-| Harness | `PATH` 上的 `dsh` | 內建於 bundle |
-| `DSH_HOME` | 沿用（預設 `~/.dsh`） | `~/Library/Application Support/dsh-desktop/dsh-home` |
-| `PATH` | 繼承終端 | 從 login shell 取回 |
-| 工作目錄 | repo | `~` |
+---
 
-- **獨立的 DSH home**。DSH 每次啟動都會把 `$DSH_HOME/profiles/node_modules` 重新
-  指向「這次啟動它的那份安裝」。打包版與 CLI 若共用 `~/.dsh`，兩邊會一直互相改寫
-  這些連結。因此打包版有自己的 profile、憑證與 session（與上游相同作法）；要指定
-  其他位置請設 `DSH_DESKTOP_DSH_HOME`（刻意**不**沿用繼承來的 `DSH_HOME`，免得從
-  終端啟動時悄悄共用 CLI 的 home）。
-- **login-shell PATH**。從 Finder／Dock 開啟時，行程只有 launchd 的
-  `/usr/bin:/bin:/usr/sbin:/sbin`，agent 的工具會找不到 Homebrew、cargo、nvm 等。
-  [shell-environment.js](src/main/shell-environment.js) 以 `$SHELL -ilc`（zsh、bash、
-  fish）跑一次、在隨機標記間讀出環境，只採用 `PATH` 與一小組工具鏈變數
-  （`GOPATH`、`JAVA_HOME`、`LC_*`……），且後者不覆寫既有值。3 秒逾時或失敗時保留原環境。
+## 使用
 
-### Node PTC runtime 與 `process.execPath`
+從 Launchpad、Spotlight 或 Finder 開啟 **DeepSeek Harness** 即可。首次啟動時請依
+畫面指示設定 API key。
 
-`dsh-ptc-runtime-node` 以 `process.execPath` 執行每一段 Node 程式。在 Electron 裡那是
-Electron app 本身，子行程會以 app 身分啟動並失敗（`invalid control message limit`）。
-`ELECTRON_RUN_AS_NODE` 不能從 main process 匯出——所有 Chromium helper 都會繼承而
-無法啟動——而且該 runtime 本來就會把它從子行程環境剝掉。
-
-[node-shim.js](src/main/node-shim.js) 在 userData 產生一個 `node` shell shim
-（`ELECTRON_RUN_AS_NODE=1 exec <Electron> "$@"`），再以一層產生的 `--patch` overlay
-把它設成 `ptc-runtime` row 的 `nodeExecutable`。只有這一個 row 看得到這個旗標；
-每次啟動重寫，因為 app 搬家後路徑會變。開發版同樣適用。
-`pnpm smoke` 與 `pnpm package:smoke` 都會實際跑一段 PTC 程式驗證；
-`pnpm probe:ptc` 則是單獨的探針（`DSH_PROBE_NO_SHIM=1` 可重現原本的失敗）。
-
-### 應用程式名稱與圖標
-
-macOS 的選單列名稱、Cmd-Tab 標籤與 Finder 名稱來自 bundle 的 `Info.plist`，
-執行中的行程改不了——`app.setName` 只影響 Electron 自己的選單與 About 面板。
-所以直接 `electron .` 永遠顯示「Electron」。
-
-`pnpm start` 因此先由 [branded-bundle.js](src/main/branded-bundle.js)
-把 `Electron.app` 複製成 `.electron-app/<名稱>.app`（APFS clone，幾乎不佔空間），
-改寫 `CFBundleName`、`CFBundleDisplayName`、`CFBundleIdentifier` 並放入圖標，
-再從它啟動。輸入（Electron 版本、名稱、bundle id、圖標內容）沒變時會重用。
-
-執行時另外設定 Dock 圖標與 About 面板，因此 `pnpm start:plain`（原本的
-`electron .`）至少 Dock 圖標是對的。
-
-每個欄位依序取值，前者優先：
-
-1. 環境變數（`DSH_DESKTOP_APP_NAME`、`DSH_DESKTOP_ICON`）——單次啟動覆寫，不寫檔
-2. **設定 → 應用外觀**頁面存下的選擇（`<userData>/branding.json`）
-3. 預設值：`package.json` 的 `productName`（`DeepSeek Harness`）；
-   [assets/icon.png](assets/icon.png) 與 [assets/icon.icns](assets/icon.icns)，
-   沿用上游 MIT 授權圖標，見 [assets/NOTICE.md](assets/NOTICE.md)
-
-改名**不會**搬動資料：userData 固定在 `~/Library/Application Support/dsh-desktop`，
-不隨名稱改變。
-
-### 設定頁：應用外觀
-
-DSH 設定面板裡多一個「應用外觀」區塊，可以改名稱、選圖標、還原預設。
-
-| 變更 | 立即生效 | 重新啟動後生效 |
-|---|---|---|
-| 圖標 | Dock、About 面板 | Finder、Cmd-Tab |
-| 名稱 | About 面板、視窗標題 | 選單列粗體名稱、Cmd-Tab |
-
-有需要重新啟動的差異時，頁面會出現「立即重新啟動」。重新啟動不是
-`app.relaunch()`——那會重跑**舊的** bundle，而且 bundle 在 app 執行中不能重建
-（Chromium 會從裡面啟動 helper）。改由 [relaunch.js](src/main/relaunch.js) 留下一個
-detached helper：等舊行程結束 → 重建 bundle → 從新 bundle 啟動。
-helper 的輸出寫在 `<userData>/relaunch.log`。
-
-打包版沒有開發用 bundle 可重建，helper 改為直接修改安裝好的 app：改寫
-`Info.plist` 與圖標、在上層目錄可寫且新名稱未被占用時把 `.app` 一併改名
-（否則只改選單列與 Cmd-Tab，Finder 仍是舊檔名），最後重新 ad-hoc 簽章——改
-`Info.plist` 會破壞原本的封存。因此裝在需要管理員權限的位置（如 `/Applications`
-且非本人擁有）時改名會失敗，請裝在 `~/Applications`。
-bundle 目前顯示的名稱與圖標記錄在它自己的 `Info.plist`（`CFBundleName`、
-`DSHDesktopIconSource`），設定頁據此判斷是否還需要重新啟動。
-
-架構依照上游 `dsh-plugin-desktop` 的做法，但只保留必要的部分：
-
-- **Client**：[plugins/dsh-desktop-branding](plugins/dsh-desktop-branding/) 是一個
-  只有 client 半邊的 DSH 插件，向 `settings.section` slot 註冊頁面。bundle 是手寫的
-  lazy-CJS（與 tsdown 輸出同格式），不需要建置步驟。
-- **載入**：[plugins/cordis.patch.yml](plugins/cordis.patch.yml) 在啟動時以
-  `--patch` overlay 插入，**不修改** `~/.dsh` 的 profile；從終端跑 `dsh web`
-  看不到這個頁面。同一個 overlay 也關掉 `printUrl`，讓 launch token 不會印進終端。
-- **Host 路由**：main process 直接在 `webServer` 上註冊
-  `/api/dsh-desktop/branding*`（[branding-routes.js](src/main/branding-routes.js)），
-  因為 Dock、檔案對話框、重新啟動都需要 Electron，Cordis host 插件拿不到。
-
-路由同時要求：
-
-- 上游 Connection 的 cookie 驗證；
-- **本 generation 的能力 header**：只有桌面視窗自己的 session 會附上，
-  所以一般瀏覽器即使有 cookie 也進不來，頁面會顯示「僅在桌面應用中可用」；
-- 修改類請求還要：`Origin` 完全相符、JSON、4KB 上限、欄位完全吻合。
-
-選圖標用的是原生檔案對話框，頁面**不能**傳入路徑。選中的檔案會先檢查
-magic bytes 並試解碼，再複製進 userData（以內容雜湊命名），所以就算原檔之後被
-移走，設定也還在。
-
-主視窗仍然 `sandbox: true`，不暴露任何 Electron API（唯一的 preload 只設
-`data-platform` 屬性）。
+- 應用程式只會執行一個實例；再次開啟會把現有視窗帶到前景。
+- 點擊 Dock 圖標會回到執行中的視窗。
+- 結束應用程式時，會等待所有背景工作與子行程正常關閉。
+- 從 Finder 或 Dock 開啟時，應用程式會自動讀取登入 shell（zsh、bash、fish）的
+  `PATH` 與常用工具鏈變數，因此 Homebrew、cargo、nvm 等安裝的工具都能正常使用。
 
 ### 鍵盤快捷鍵
 
-按鍵沿用 [ChatGPT / Codex 桌面版](https://developers.openai.com/codex/app/commands)
-的習慣（macOS 為 ⌘，Windows/Linux 為 Ctrl）：
+快捷鍵位於原生選單列中，即使焦點在輸入框內也有效。完整列表也可以在
+**設定 › 鍵盤快捷鍵**中查看。
 
 | 快捷鍵 | 動作 |
 |---|---|
 | ⌘ , | 打開設定 |
-| ⌘ / | 設定 › 鍵盤快捷鍵 |
+| ⌘ / | 查看鍵盤快捷鍵 |
 | ⌘ B | 切換左側欄 |
 | ⌘ ⌥ B | 切換右側面板 |
 | ⌘ N、⌘ ⇧ O | 新會話 |
 | ⌘ G | 搜尋會話 |
-| ⌘ ⇧ [、⌘ ⇧ ] | 上／下一個會話 |
-| ⌘ 1…9 | 跳到側欄第 1–9 個會話（⌘9 為最後一個） |
-| ⌘ = / ⌘ - / ⌘ 0 | 放大／縮小／實際大小 |
-| ⌃ ⌘ F、⌘ W、⌘ M、⌘ Q | 全螢幕、關閉、最小化、結束 |
+| ⌘ ⇧ [、⌘ ⇧ ] | 上一個／下一個會話 |
+| ⌘ 1 … ⌘ 8 | 跳到側欄第 1–8 個會話 |
+| ⌘ 9 | 跳到最後一個會話 |
+| ⌘ = ／ ⌘ - ／ ⌘ 0 | 放大／縮小／實際大小 |
+| ⌃ ⌘ F | 全螢幕 |
+| ⌘ W、⌘ M、⌘ Q | 關閉視窗、最小化、結束 |
 
-- **按鍵掛在原生選單上**（[shortcuts.js](src/main/shortcuts.js)）。選單列看得到，
-  焦點在輸入框裡也有效，頁面攔不走。同時保留標準的 Edit 選單，否則取代預設選單後
-  ⌘C/⌘V 會失效。
-- **命令單向推給頁面**：選單項以 `executeJavaScript` 在頁面上 dispatch 一個
-  `dsh-desktop:command` DOM 事件，內容只能是命令表中的 id。頁面拿不到任何回呼
-  main process 的管道。
-- **頁面端**：[plugins/dsh-desktop-shortcuts](plugins/dsh-desktop-shortcuts/) 監聽該事件，
-  直接呼叫上游服務（`ctx.layout.toggleSidebar`、`ctx.uiWorkspace.startSession`、
-  `ctx.sidebarRight.toggleExpanded`）。上游把狀態放在元件內部的（設定 modal、會話搜尋框、
-  會話列）則改為點擊使用者會點的那個控制項，以 locale 後的 `aria-label` 找到。
-  它同時在設定裡加一頁「鍵盤快捷鍵」列出所有按鍵。
-- 兩邊的命令表由 `scripts/test-shortcuts.mjs` 確認一致；`pnpm smoke` 會實際點選單項，
-  確認 ⌘,、⌘/、⌘B 在真實視窗中生效。
+### 自訂名稱與圖標
+
+在 **設定 › 應用外觀**中可以修改應用程式名稱、選擇圖標，或還原預設值。
+
+| 變更 | 立即生效 | 重新啟動後生效 |
+|---|---|---|
+| 圖標 | Dock、「關於」面板 | Finder、Cmd-Tab |
+| 名稱 | 視窗標題、「關於」面板 | 選單列、Cmd-Tab、Finder |
+
+需要重新啟動時，頁面會顯示「立即重新啟動」按鈕。選擇的圖標會複製一份保存在應用程式
+資料夾中，原始檔案之後移動或刪除都不影響。修改名稱不會搬移任何使用者資料。
+
+非正方形的 PNG 圖標會被縮放成正方形（不會裁切）。
 
 ---
 
-## 驗證
+## 資料位置
 
-整套 gate 不需啟動圖形介面：
+| 內容 | 路徑 |
+|---|---|
+| 應用程式資料 | `~/Library/Application Support/dsh-desktop/` |
+| DSH home（profile、憑證、會話、`.env`） | `~/Library/Application Support/dsh-desktop/dsh-home/` |
+| 外觀設定 | `~/Library/Application Support/dsh-desktop/branding.json` |
+| 重新啟動記錄 | `~/Library/Application Support/dsh-desktop/relaunch.log` |
+
+桌面應用使用**獨立的 DSH home**，與命令列版 `dsh` 的 `~/.dsh` 分開，兩者的 profile、
+憑證與會話互不影響。若要讓桌面應用使用相同的 API key，請把對應設定放進上表的
+DSH home（例如複製 `.env`）。
+
+---
+
+## 進階設定
+
+以下環境變數可以在從終端機啟動時使用：
+
+| 環境變數 | 說明 |
+|---|---|
+| `DSH_DESKTOP_DSH_HOME` | 覆寫 DSH home 位置 |
+| `DSH_DESKTOP_PROFILE` | DSH profile 名稱，預設 `web` |
+| `DSH_DESKTOP_PORT` | 本機服務的 port，預設由系統指派 |
+| `DSH_DESKTOP_USER_DATA` | 覆寫應用程式資料目錄 |
+| `DSH_DESKTOP_APP_NAME` | 本次啟動使用的應用程式名稱 |
+| `DSH_DESKTOP_ICON` | 本次啟動使用的圖標（`.png` 或 `.icns`） |
+| `DSH_DESKTOP_BUNDLE_ID` | 覆寫 bundle identifier |
+| `DSH_DESKTOP_VERBOSE` | 設為 `1` 以輸出診斷訊息 |
+
+環境變數優先於設定頁中的選擇，且不會寫入設定檔。
+
+---
+
+## 安全性
+
+- **隔離的頁面環境**：視窗以 `contextIsolation`、`sandbox` 與 `webSecurity` 全開的
+  設定執行，使用獨立的 session partition，不透過 preload 或 IPC 暴露任何 Electron API。
+- **本機專屬服務**：DSH 服務只綁定 loopback。視窗載入前會先在自己的 session 內
+  完成認證，啟動 token 不會出現在網址或瀏覽紀錄中。
+- **每次啟動專屬的存取憑證**：應用程式會在每個來自自身視窗、且目標為本機服務的請求上
+  附加一次性的存取 header。其他程式或瀏覽器即使取得 cookie，也無法使用桌面專屬的功能。
+- **封閉的視窗導覽**：視窗無法被導向其他網站。外部連結會在預設瀏覽器中開啟，且只
+  允許 `https:`、`http:` 與 `mailto:`。
+- **原生檔案選擇**：選擇圖標一律透過系統檔案對話框，頁面無法指定任意路徑；檔案在
+  使用前會先驗證格式。
+
+---
+
+## 開發
 
 ```bash
-pnpm check
+pnpm install
+pnpm start          # 以本機已安裝的 dsh 啟動開發版
+pnpm check          # 語法檢查、單元測試與認證合約測試（不需圖形介面）
+pnpm smoke          # 啟動真實視窗，確認介面掛載與快捷鍵運作後自動結束
+pnpm package:smoke  # 打包並以全新的資料目錄驗證打包版
 ```
 
-| 指令 | 內容 |
+開發版會使用 `PATH` 上的 `dsh`，沿用其 profile、憑證與 `~/.dsh`；
+`DSH_ANCHOR` 可以指定另一份 harness 安裝。
+
+若在會阻擋 Chromium sandbox 與網路服務的受限環境中執行 smoke 測試，可以用
+`DSH_DESKTOP_ELECTRON_FLAGS` 傳入額外的 Electron 旗標：
+
+```bash
+DSH_DESKTOP_ELECTRON_FLAGS="--no-sandbox --disable-features=NetworkService,NetworkServiceInProcess" pnpm smoke
+```
+
+### 版本相容性
+
+DSH 的原生模組會比對執行環境的 V8 與 Node 版本，因此 Electron 版本必須與 DSH 版本
+精確對應。目前的組合為：
+
+| 元件 | 版本 |
 |---|---|
-| `pnpm check` | 語法 + 單元 + 認證合約 |
-| `pnpm test:unit` | 能力 token、header 注入、視窗封閉性、harness 探索、應用程式識別、外觀路由的准入規則與設定檔、快捷鍵命令表與選單、打包版面／node shim／login-shell 解析（無視窗） |
-| `node scripts/test-relaunch.mjs` | 在真實視窗內改名 → 重新啟動 → 確認新 bundle 的 `Info.plist` 與新行程（使用拋棄式 userData） |
-| `pnpm test:admission` | 對真實 host 驗證完整認證鏈（14 斷言） |
-| `pnpm probe:host` | 無視窗檢查 tree 狀態、服務、injection rows |
-| `pnpm probe:http` | 區分「host 不服務」與「Electron 無法導覽」 |
-| `pnpm probe:window` | 最小導覽探針，不含 DSH，用於判斷 Chromium 本身能否啟動 |
-| `pnpm smoke` | **啟動真實視窗並確認 client 掛載後自動退出** |
-| `pnpm package:smoke` | 打包後，從 `/` 以拋棄式 userData 與 DSH home 啟動打包版並跑完整 smoke |
-| `pnpm probe:ptc` | 在 Electron main process 內跑一段 Node PTC 程式 |
+| DeepSeek Harness | 0.1.6-alpha.2（鎖定於 `runtime/pnpm-lock.yaml`） |
+| Electron | 43.0.0 |
+| Node.js（執行 `pnpm check` 等腳本） | 24.21.0 |
 
-smoke 若遇到全新的 DSH home，會先像使用者一樣點掉上游的首次啟動 modal
-（「Internal Testing Notice」與「新增 API key」），否則它們會讓頁面 inert、
-快捷鍵檢查失敗。
+升級 DSH 時請修改 `runtime/`，並確認新版本支援對應的 Electron；打包腳本會實際載入
+harness 驗證相容性。使用 Nix 建置時，修改 lockfile 後需同步更新
+`nix/package.nix` 中的 `pnpmDeps.hash`。
 
-`pnpm check` 驗證到視窗為止；`pnpm smoke` 驗證視窗本身。後者不信任
-`loadURL` 的回傳（空白頁與錯誤頁同樣會 resolve），而是實際檢查 DOM：
+### 專案結構
 
-```
-client mounted: {"title":"DeepSeek Harness","hasBoot":true,"rootChildren":1,
-  "text":"New Session\nPlugins\nWorkspaces\nNo sessions yet\nSettings\n…"}
-```
+| 路徑 | 內容 |
+|---|---|
+| `src/main/` | Electron main process：DSH host、視窗、認證、選單與外觀管理 |
+| `src/preload/` | 標記 macOS 平台的最小 preload |
+| `plugins/` | 應用外觀與鍵盤快捷鍵的 DSH client 插件，以及啟動時套用的 profile patch |
+| `runtime/` | 打包用的 DSH harness 版本鎖定 |
+| `scripts/` | 啟動、打包、安裝、測試與診斷腳本 |
+| `nix/` | Nix 套件與 home-manager 模組 |
+| `assets/` | 預設圖標 |
 
-`test:admission` 驗證的實際合約：
+---
 
-```
-clean GET /              → 401   （視窗不能直接載入裸 origin）
-tokenized GET /          → 303 + Set-Cookie (HttpOnly, SameSite=Strict)
-clean GET / with cookie  → 200 + <!doctype html> + __DSH_BOOT__
-```
+## 疑難排解
 
-並確認伺服器渲染的 index **不含** `dshDesktopBoot`——證實混合式架構下
-不需要任何 desktop boot shim。
+**App 無法開啟，顯示「已損毀」或「無法驗證開發者」**
+App 目前使用 ad-hoc 簽章。請右鍵 →「打開」，或移除 quarantine 屬性（見[安裝](#安裝)）。
+
+**修改名稱後 Finder 中的檔名沒有改變**
+App 所在目錄不可寫入，或已有同名的 app。請將 app 安裝在 `~/Applications`。
+
+**Agent 找不到 Homebrew 或其他工具**
+確認工具已加入登入 shell 的 `PATH`（例如 `~/.zprofile` 或 `~/.zshrc`），然後重新
+啟動應用程式。
 
 ---
 
 ## 已知限制
 
-### 受限環境下的 Electron 旗標
+- 僅支援 Apple Silicon。
+- 尚未提供 Developer ID 簽章與公證、DMG 安裝檔及自動更新。
+- 尚未支援選單列圖示（tray）與視窗位置保存。
+- 應用外觀設定的介面語言目前提供簡體中文與英文。
 
-某些沙箱環境會擋住 Chromium 的沙箱與 out-of-process 網路服務，症狀是
-`Failed to initialize sandbox` 與 `Network service crashed or was terminated`。
-此時 `session.fetch` 會以 `net::ERR_FAILED` 失敗。
+---
 
-繞道方式（**僅為環境屬性，不屬於應用設定**）：
+## 致謝
 
-```bash
-DSH_DESKTOP_ELECTRON_FLAGS="--no-sandbox --disable-features=NetworkService,NetworkServiceInProcess" \
-pnpm smoke
-```
-
-一般終端不需要這些旗標。
-
-### 尚未實作
-
-tray、視窗狀態保存、自動更新、Developer ID 簽章與 notarization、DMG、Intel／universal。
-
-`.electron-app/` 只是開發用 bundle；可散佈的是 `pnpm package` 產生的 `dist/<名稱>.app`。
-
-### 應用外觀頁的限制
-
-- 依賴 DSH 內部介面：`settings.section` slot、`window.__ModuleLoader__` 的 bundle
-  格式、`runProfile` 的 `patchFiles`。和 Electron 版本鎖一樣，升級 DSH 時要重跑
-  `pnpm smoke`（它會打開設定頁確認區塊有渲染）。
-- 非正方形的 PNG 轉 `.icns` 時會被拉伸，不會裁切。
-- 字典只有 `zh`（簡體，跟隨 DSH 自身的 locale）與 `en`。
+預設圖標沿用上游專案的 MIT 授權圖標，詳見 [assets/NOTICE.md](assets/NOTICE.md)。
+架構參考了 [anywhere-labs/dsh-desktop](https://github.com/anywhere-labs/dsh-desktop)。
